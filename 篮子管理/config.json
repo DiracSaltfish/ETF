@@ -1,0 +1,11 @@
+{
+  "host": "127.0.0.1",
+  "port": 7496,
+  "client_id": 9701,
+  "account": "U15286908",
+  "basket_path": "/Users/ellis/Desktop/ETF交割/篮子管理/xop_990_share_short_basket_live_2026-07-02.xlsx",
+  "order_type": "MKT",
+  "tif": "DAY",
+  "outside_rth": false,
+  "limit_buffer_bps": 10
+}
