@@ -91,6 +91,7 @@ class PortfolioPosition:
     market_value: float
     unrealized_pnl: float
     realized_pnl: float
+    con_id: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", normalize_symbol(self.symbol))
@@ -158,6 +159,8 @@ class SubmittedOrder:
     order_id: int
     perm_id: int
     status: str
+    con_id: int = 0
+    order_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -178,3 +181,6 @@ class OrderMonitorRecord:
     avg_fill_price: float = 0.0
     last_update: str = ""
     note: str = ""
+    con_id: int = 0
+    order_ref: str = ""
+    account: str = ""

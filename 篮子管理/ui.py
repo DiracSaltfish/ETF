@@ -20,12 +20,14 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -40,9 +42,13 @@ from PyQt5.QtWidgets import (
 from basket_loader import load_basket_document
 from basket_planner import build_component_target_basket, default_target_xop_shares
 from basket_models import BasketDocument, ConnectionSettings, OrderMonitorRecord, PortfolioPosition, ReconciliationRow, SymbolMarketState
+from close_only import CloseOnlyPlan, TERMINAL_ORDER_STATUSES
+from close_store import load_active_campaign_basis, load_active_campaign_orders
 from config_store import load_config, save_config
 from ib_service import (
     cancel_monitor_orders,
+    execute_close_only_plan,
+    load_close_only_preview,
     load_market_states,
     load_positions,
     place_component_basket_orders,
@@ -284,6 +290,9 @@ class MainWindow(QMainWindow):
         self.market_states: tuple[SymbolMarketState, ...] = ()
         self.reconciliation_rows: tuple[ReconciliationRow, ...] = ()
         self.monitor_records: tuple[OrderMonitorRecord, ...] = ()
+        self.close_plan: CloseOnlyPlan | None = None
+        self.close_active_orders = ()
+        self.close_session_guard = False
         self.monitor_batch_seq = 0
         self._build_ui()
         self._load_saved_state()
@@ -345,7 +354,13 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         layout.addWidget(self._build_order_card())
         layout.addStretch(1)
-        return container
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(container)
+        scroll.setMinimumWidth(330)
+        return scroll
 
     def _build_order_card(self) -> QWidget:
         card = QFrame()
@@ -355,6 +370,42 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
         title = QLabel("订单执行")
         title.setObjectName("sectionTitle")
+
+        close_box = QFrame()
+        close_box.setObjectName("noteCard")
+        close_layout = QVBoxLayout(close_box)
+        close_layout.setContentsMargins(14, 14, 14, 14)
+        close_layout.setSpacing(10)
+        close_title = QLabel("仅平仓到 0（推荐）")
+        close_title.setObjectName("sectionTitle")
+        close_hint = QLabel(
+            "只允许买回现有成分券空头、卖出现有 XOP 多头；每次执行前都会从 TWS 重新读取持仓、活动订单和 conId。"
+        )
+        close_hint.setObjectName("mutedHint")
+        close_hint.setWordWrap(True)
+        self.close_tranche_combo = QComboBox()
+        self.close_tranche_combo.addItems(["5%", "10%", "25%", "50%", "100%"])
+        self.close_tranche_combo.setCurrentText("25%")
+        self.close_pricing_combo = QComboBox()
+        self.close_pricing_combo.addItems(["盘口对手价", "市价（高风险）"])
+        close_form = QFormLayout()
+        close_form.addRow("本批释放比例", self.close_tranche_combo)
+        close_form.addRow("定价模式", self.close_pricing_combo)
+        close_buttons = QHBoxLayout()
+        self.refresh_close_button = QPushButton("生成/刷新预览")
+        self.refresh_close_button.setObjectName("secondaryButton")
+        self.execute_close_button = QPushButton("执行本批")
+        self.execute_close_button.setObjectName("dangerButton")
+        close_buttons.addWidget(self.refresh_close_button)
+        close_buttons.addWidget(self.execute_close_button)
+        self.close_note = QLabel("先生成只读预览；预览不会下单。")
+        self.close_note.setObjectName("mutedHint")
+        self.close_note.setWordWrap(True)
+        close_layout.addWidget(close_title)
+        close_layout.addWidget(close_hint)
+        close_layout.addLayout(close_form)
+        close_layout.addLayout(close_buttons)
+        close_layout.addWidget(self.close_note)
 
         component_box = QFrame()
         component_box.setObjectName("noteCard")
@@ -429,8 +480,17 @@ class MainWindow(QMainWindow):
         xop_layout.addWidget(self.xop_note)
 
         layout.addWidget(title)
+        layout.addWidget(close_box)
         layout.addWidget(component_box)
         layout.addWidget(xop_box)
+        self.refresh_close_button.clicked.connect(self.refresh_close_only_plan)
+        self.execute_close_button.clicked.connect(self.execute_close_only_batch)
+        self.close_tranche_combo.currentTextChanged.connect(
+            lambda: self.invalidate_close_plan("释放比例已改变，请重新生成预览")
+        )
+        self.close_pricing_combo.currentTextChanged.connect(
+            lambda: self.invalidate_close_plan("定价模式已改变，请重新生成预览")
+        )
         self.buy_components_button.clicked.connect(lambda: self.submit_component_basket("BUY"))
         self.sell_components_button.clicked.connect(lambda: self.submit_component_basket("SELL"))
         self.submit_xop_button.clicked.connect(self.submit_xop_order)
@@ -444,6 +504,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
 
+        self.close_table = configured_table()
         self.recon_table = configured_table()
         self.portfolio_table = configured_table()
         self.monitor_table = configured_table()
@@ -485,6 +546,7 @@ class MainWindow(QMainWindow):
         monitor_layout.addWidget(self.monitor_table, 1)
 
         tabs = QTabWidget()
+        tabs.addTab(self.close_table, "平仓到 0 预览")
         tabs.addTab(self.recon_table, "篮子核对")
         tabs.addTab(self.portfolio_table, "IB 持仓")
         tabs.addTab(monitor_widget, "下单过程监控")
@@ -511,10 +573,69 @@ class MainWindow(QMainWindow):
                 base_target = default_target_xop_shares(self.basket, base_symbol=BASE_SYMBOL)
                 if base_target > 0:
                     self.component_target_xop_spin.setValue(base_target)
+                self.restore_close_only_monitor_records()
         self.refresh_config_summaries()
         self.refresh_views()
 
+    def restore_close_only_monitor_records(self) -> None:
+        if not self.basket or not self.current_account():
+            self.close_session_guard = False
+            return
+        self.close_session_guard = False
+        try:
+            restored = load_active_campaign_orders(
+                account=self.current_account(),
+                base_symbol=BASE_SYMBOL,
+                basket_path=str(self.basket.path),
+            )
+        except Exception as exc:
+            self.close_session_guard = True
+            self.append_log(f"恢复 Close Only 审计记录失败（后续预检将阻塞）: {exc}")
+            return
+        if restored is None:
+            return
+        self.close_session_guard = True
+        campaign_id, orders = restored
+        existing_refs = {record.order_ref for record in self.monitor_records if record.order_ref}
+        restored_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        records = [
+            OrderMonitorRecord(
+                batch_id="RESTORED",
+                group_label="Close Only",
+                submitted_at=restored_at,
+                symbol=order.symbol,
+                action=order.action,
+                quantity=order.quantity,
+                order_type=order.order_type,
+                limit_price=order.limit_price,
+                order_id=order.order_id,
+                perm_id=order.perm_id,
+                status=order.status,
+                filled=0.0,
+                remaining=float(order.quantity),
+                avg_fill_price=0.0,
+                last_update=restored_at,
+                note=f"从会话 {campaign_id} 恢复；连接 TWS 后请刷新监控",
+                con_id=order.con_id,
+                order_ref=order.order_ref,
+                account=self.current_account(),
+            )
+            for order in orders
+            if order.order_ref not in existing_refs
+        ]
+        if records:
+            self.monitor_records = tuple(records) + self.monitor_records
+            self.append_log(f"已从 Close Only 会话 {campaign_id} 恢复 {len(records)} 笔订单监控记录")
+
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self.active_workers > 0:
+            QMessageBox.warning(
+                self,
+                "任务仍在运行",
+                "当前有 TWS 读取或下单任务未结束。为避免中途退出造成状态不明，请等待任务完成后再关闭。",
+            )
+            event.ignore()
+            return
         self.persist_config()
         super().closeEvent(event)
 
@@ -537,6 +658,36 @@ class MainWindow(QMainWindow):
 
     def current_account(self) -> str:
         return str(self.config.get("account") or "").strip()
+
+    def current_close_tranche_percent(self) -> int:
+        return int(self.close_tranche_combo.currentText().rstrip("%"))
+
+    def active_close_campaign_basis(self):
+        if not self.basket or not self.current_account():
+            return None
+        try:
+            basis = load_active_campaign_basis(
+                account=self.current_account(),
+                base_symbol=BASE_SYMBOL,
+                basket_path=str(self.basket.path),
+            )
+            self.close_session_guard = basis is not None
+            return basis
+        except Exception as exc:
+            self.append_log(f"读取 Close Only 会话失败: {exc}")
+            raise
+
+    def invalidate_close_plan(self, reason: str = "状态已改变，请重新生成预览") -> None:
+        if self.close_plan is not None:
+            self.append_log(f"Close Only 预览失效: {reason}")
+        self.close_plan = None
+        self.close_active_orders = ()
+        if hasattr(self, "close_note"):
+            self.close_note.setText(reason)
+        if hasattr(self, "close_table"):
+            self.populate_close_table()
+        if hasattr(self, "execute_close_button"):
+            self.update_execution_controls()
 
     def component_rows(self):
         if not self.component_target_basket:
@@ -574,9 +725,9 @@ class MainWindow(QMainWindow):
 
     def setup_menu(self) -> None:
         settings_menu = self.menuBar().addMenu("设置")
-        connection_action = QAction("连接 / 篮子 / 委托设置", self)
-        connection_action.triggered.connect(self.open_settings)
-        settings_menu.addAction(connection_action)
+        self.connection_settings_action = QAction("连接 / 篮子 / 委托设置", self)
+        self.connection_settings_action.triggered.connect(self.open_settings)
+        settings_menu.addAction(self.connection_settings_action)
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.config, self.known_accounts, self)
@@ -585,6 +736,12 @@ class MainWindow(QMainWindow):
         new_values = dialog.values()
         new_basket_path = str(new_values.get("basket_path") or "").strip()
         previous_basket_path = str(self.config.get("basket_path") or "").strip()
+        previous_execution_identity = (
+            str(self.config.get("host") or ""),
+            int(self.config.get("port") or 0),
+            int(self.config.get("client_id") or 0),
+            str(self.config.get("account") or ""),
+        )
         new_basket = None
         if new_basket_path:
             try:
@@ -598,6 +755,15 @@ class MainWindow(QMainWindow):
         self.basket = new_basket
         save_config(self.config)
         basket_changed = new_basket_path != previous_basket_path
+        execution_identity = (
+            str(self.config.get("host") or ""),
+            int(self.config.get("port") or 0),
+            int(self.config.get("client_id") or 0),
+            str(self.config.get("account") or ""),
+        )
+        if basket_changed or execution_identity != previous_execution_identity:
+            self.close_session_guard = False
+            self.invalidate_close_plan("连接、账户或篮子设置已改变，请重新生成预览")
         if basket_changed:
             if self.basket:
                 self.append_log(f"已在设置中载入篮子 {self.basket.path.name}，共 {self.basket.row_count} 行。")
@@ -606,6 +772,8 @@ class MainWindow(QMainWindow):
                     self.component_target_xop_spin.setValue(base_target)
             elif previous_basket_path:
                 self.append_log("已在设置中清空篮子配置。")
+        if self.basket and (basket_changed or execution_identity != previous_execution_identity):
+            self.restore_close_only_monitor_records()
         self.refresh_config_summaries()
         if basket_changed and not self.basket:
             self.market_states = ()
@@ -662,10 +830,18 @@ class MainWindow(QMainWindow):
             self.active_workers = max(0, self.active_workers - 1)
         active = self.active_workers > 0
         self.connect_button.setEnabled(not active)
+        self.connection_settings_action.setEnabled(not active)
         self.refresh_holdings_button.setEnabled(not active)
         self.refresh_market_button.setEnabled(not active and self.basket is not None)
+        self.refresh_close_button.setEnabled(not active and self.basket is not None and bool(self.current_account()))
         self.refresh_monitor_button.setEnabled(not active and bool(self.monitor_records) and self.snapshot is not None)
-        self.cancel_monitor_button.setEnabled(not active and bool(self.selected_monitor_records()))
+        self.cancel_monitor_button.setEnabled(
+            not active
+            and any(
+                record.account == self.current_account() and self.monitor_record_is_active(record)
+                for record in self.selected_monitor_records()
+            )
+        )
         self.resubmit_button.setEnabled(not active and self.can_resubmit_selected_monitor_order())
         if message:
             self.status_chip.setText(message)
@@ -721,9 +897,62 @@ class MainWindow(QMainWindow):
             log_message="开始刷新篮子行情和可融券数据",
         )
 
+    def refresh_close_only_plan(self) -> None:
+        if not self.basket:
+            QMessageBox.warning(self, "无法生成预览", "请先在设置中配置篮子文件。")
+            return
+        if not self.current_account():
+            QMessageBox.warning(self, "无法生成预览", "请先明确选择 IBKR 账户。")
+            return
+        self.persist_config()
+        settings = self.gather_connection_settings()
+        basket = self.basket
+        tranche = self.current_close_tranche_percent()
+        pricing_mode = "MKT" if self.close_pricing_combo.currentText().startswith("市价") else "OPPONENT"
+        try:
+            campaign_basis = self.active_close_campaign_basis()
+        except Exception as exc:
+            QMessageBox.critical(self, "会话读取失败", str(exc))
+            return
+        self.start_worker(
+            lambda: load_close_only_preview(
+                settings,
+                basket,
+                tranche_percent=tranche,
+                base_symbol=BASE_SYMBOL,
+                campaign_basis=campaign_basis,
+                pricing_mode=pricing_mode,
+            ),
+            self.on_close_only_preview_finished,
+            busy_message="Close Only 只读预检中",
+            log_message=f"开始生成 Close Only {tranche}% 只读预览（不会下单）",
+        )
+
+    def on_close_only_preview_finished(self, preview) -> None:
+        self.snapshot = preview.snapshot
+        self.positions = preview.positions
+        self.market_states = preview.market_states
+        self.close_active_orders = preview.active_orders
+        self.close_plan = preview.plan
+        try:
+            self.close_session_guard = self.active_close_campaign_basis() is not None
+        except Exception:
+            self.close_session_guard = True
+        self.remember_accounts(preview.snapshot.managed_accounts, preview.snapshot.active_account)
+        self.append_log(
+            f"Close Only 预览已生成: plan={preview.plan.plan_id} "
+            f"components={len(preview.plan.component_lines)} XOP={preview.plan.total_base_sell_qty} "
+            f"blockers={len(preview.plan.blockers)}"
+        )
+        self.refresh_views()
+        self.tabs.setCurrentWidget(self.close_table)
+
     def on_probe_finished(self, snapshot) -> None:
+        previous_account = self.current_account()
         self.snapshot = snapshot
         self.remember_accounts(snapshot.managed_accounts, snapshot.active_account)
+        if previous_account and snapshot.active_account != previous_account:
+            self.invalidate_close_plan("TWS 活动账户已改变，请重新生成预览")
         account = snapshot.active_account or "未选账户"
         self.append_log(f"连接成功，当前账户: {account}")
         self.refresh_config_summaries()
@@ -733,6 +962,7 @@ class MainWindow(QMainWindow):
         snapshot, positions = payload
         self.snapshot = snapshot
         self.positions = positions
+        self.invalidate_close_plan("持仓已刷新，请重新生成 Close Only 预览")
         self.remember_accounts(snapshot.managed_accounts, snapshot.active_account)
         self.append_log(f"已刷新股票持仓 {len(positions)} 行")
         self.refresh_config_summaries()
@@ -742,6 +972,7 @@ class MainWindow(QMainWindow):
         snapshot, market_states = payload
         self.snapshot = snapshot
         self.market_states = market_states
+        self.invalidate_close_plan("行情/券源已刷新，请重新生成 Close Only 预览")
         self.remember_accounts(snapshot.managed_accounts, snapshot.active_account)
         self.append_log(f"已刷新篮子行情/券源 {len(market_states)} 行")
         self.refresh_config_summaries()
@@ -754,6 +985,12 @@ class MainWindow(QMainWindow):
             save_config(self.config)
 
     def on_worker_error(self, text: str) -> None:
+        self.invalidate_close_plan("后台任务失败，原 Close Only 预览已失效")
+        try:
+            self.close_session_guard = self.active_close_campaign_basis() is not None
+        except Exception:
+            self.close_session_guard = True
+        self.update_execution_controls()
         self.append_log("任务失败")
         self.append_log(text.strip())
         QMessageBox.critical(self, "执行失败", text)
@@ -770,6 +1007,7 @@ class MainWindow(QMainWindow):
             self.component_target_basket = None
             self.reconciliation_rows = ()
         self.refresh_config_summaries()
+        self.populate_close_table()
         self.populate_recon_table()
         self.populate_portfolio_table()
         self.populate_monitor_table()
@@ -812,6 +1050,69 @@ class MainWindow(QMainWindow):
             name=row.item.name,
             source_sheet=row.item.source_sheet,
             source_row=row.item.source_row,
+        )
+
+    def populate_close_table(self) -> None:
+        headers = [
+            "代码",
+            "角色",
+            "conId",
+            "当前持仓",
+            "方向",
+            "本批数量",
+            "预计本批后",
+            "参考价",
+            "预估委托额",
+            "账户",
+            "仅平仓校验",
+        ]
+        self.close_table.setColumnCount(len(headers))
+        self.close_table.setHorizontalHeaderLabels(headers)
+        plan = self.close_plan
+        lines = plan.lines if plan else ()
+        self.close_table.setRowCount(len(lines))
+        for row_index, line in enumerate(lines):
+            values = [
+                line.symbol,
+                "成分券" if line.role == "COMPONENT" else "基准 ETF",
+                str(line.con_id),
+                fmt_qty(line.current_position),
+                line.action,
+                fmt_qty(line.quantity),
+                fmt_qty(line.projected_position),
+                fmt_money(line.market_price) if line.market_price else "--",
+                fmt_money(line.quantity * line.market_price) if line.market_price else "--",
+                line.account,
+                "通过" if line.closes_only else "阻塞",
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if col in {2, 3, 5, 6, 7, 8}:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if col == 4:
+                    item.setBackground(QColor("#d8ecdf") if line.action == "BUY" else QColor("#f5e6c9"))
+                if col == 10:
+                    item.setBackground(QColor("#d8ecdf") if line.closes_only else QColor("#f4d8cf"))
+                self.close_table.setItem(row_index, col, item)
+        self.close_table.resizeRowsToContents()
+
+        if plan is None:
+            self.close_note.setText("先生成只读预览；预览不会下单。")
+            return
+        if plan.blockers:
+            detail = "；".join(plan.blockers[:3])
+            suffix = f"；另有 {len(plan.blockers) - 3} 项" if len(plan.blockers) > 3 else ""
+            self.close_note.setText(f"预检阻塞：{detail}{suffix}")
+            return
+        if not plan.lines:
+            self.close_note.setText("策略范围内仓位已经全部为 0，无需下单。")
+            return
+        warning = f" 提醒：{plan.warnings[0]}" if plan.warnings else ""
+        self.close_note.setText(
+            f"计划 {plan.plan_id} · {plan.tranche_percent}% · "
+            f"买回 {len(plan.component_lines)} 只/{plan.total_component_buy_qty:,} 股 · "
+            f"XOP 最多卖出 {plan.total_base_sell_qty:,} 股 · "
+            f"指纹 {plan.approval_fingerprint[:12]}。{warning}"
         )
 
     def populate_recon_table(self) -> None:
@@ -931,6 +1232,9 @@ class MainWindow(QMainWindow):
             "均价",
             "Order ID",
             "Perm ID",
+            "conId",
+            "Order Ref",
+            "账户",
             "最近更新",
             "备注",
         ]
@@ -953,12 +1257,15 @@ class MainWindow(QMainWindow):
                 fmt_money(record.avg_fill_price) if record.avg_fill_price else "--",
                 str(record.order_id or "--"),
                 str(record.perm_id or "--"),
+                str(record.con_id or "--"),
+                record.order_ref or "--",
+                record.account or "--",
                 record.last_update or "--",
                 record.note or "",
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if col in {5, 7, 9, 10, 11, 12, 13}:
+                if col in {5, 7, 9, 10, 11, 12, 13, 14}:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if col == 8:
                     status = record.status.upper()
@@ -989,20 +1296,28 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def monitor_record_is_active(record: OrderMonitorRecord) -> bool:
-        return record.status in {"PendingSubmit", "ApiPending", "PreSubmitted", "Submitted"}
+        terminal = {status.upper() for status in TERMINAL_ORDER_STATUSES}
+        return str(record.status or "Unknown").upper() not in terminal
 
     def can_resubmit_selected_monitor_order(self) -> bool:
         selected = self.selected_monitor_records()
         if len(selected) != 1 or not self.snapshot or not self.current_account():
             return False
         record = selected[0]
-        return not self.monitor_record_is_active(record)
+        if not record.account or record.account != self.current_account():
+            return False
+        if record.group_label == "Close Only" or record.order_ref.startswith("UW-"):
+            return False
+        return not self.monitor_record_is_active(record) and record.remaining > 0
 
     def on_monitor_selection_changed(self) -> None:
         selected = self.selected_monitor_records()
         if len(selected) == 1:
             record = selected[0]
-            self.resubmit_symbol_label.setText(f"补单对象：{record.symbol} {record.action}")
+            if record.group_label == "Close Only" or record.order_ref.startswith("UW-"):
+                self.resubmit_symbol_label.setText("Close Only 禁止从监控表补单；请重新预检")
+            else:
+                self.resubmit_symbol_label.setText(f"补单对象：{record.symbol} {record.action}")
             default_qty = int(round(record.remaining)) if record.remaining > 0 else int(record.quantity)
             self.resubmit_qty_spin.setValue(max(1, default_qty))
         elif len(selected) > 1:
@@ -1010,7 +1325,11 @@ class MainWindow(QMainWindow):
         else:
             self.resubmit_symbol_label.setText("补单对象：--")
         active = self.active_workers == 0
-        self.cancel_monitor_button.setEnabled(active and bool(selected))
+        cancelable = any(
+            record.account == self.current_account() and self.monitor_record_is_active(record)
+            for record in selected
+        )
+        self.cancel_monitor_button.setEnabled(active and cancelable)
         self.resubmit_button.setEnabled(active and self.can_resubmit_selected_monitor_order())
 
     def register_monitor_orders(self, orders, group_label: str) -> None:
@@ -1035,12 +1354,15 @@ class MainWindow(QMainWindow):
                 avg_fill_price=0.0,
                 last_update=submitted_at,
                 note="",
+                con_id=order.con_id,
+                order_ref=order.order_ref,
+                account=self.current_account(),
             )
             for order in orders
         ]
         self.monitor_records = tuple(new_records) + self.monitor_records
         self.populate_monitor_table()
-        self.tabs.setCurrentIndex(2)
+        self.tabs.setCurrentWidget(self.monitor_table.parentWidget())
 
     def refresh_order_monitor_tab(self) -> None:
         if not self.monitor_records:
@@ -1069,7 +1391,11 @@ class MainWindow(QMainWindow):
         if not selected:
             QMessageBox.information(self, "无需撤单", "请先在监控表中选择一行或多行订单。")
             return
-        active_records = [record for record in selected if self.monitor_record_is_active(record)]
+        active_records = [
+            record
+            for record in selected
+            if record.account == self.current_account() and self.monitor_record_is_active(record)
+        ]
         if not active_records:
             QMessageBox.information(self, "无需撤单", "选中的订单当前不是活动状态，无法再发撤单。")
             return
@@ -1108,10 +1434,26 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "无法补单", "请在监控表中只选择一笔订单做补单。")
             return
         record = selected[0]
+        if not record.account or record.account != self.current_account():
+            QMessageBox.warning(self, "账户不一致", "该监控记录不属于当前账户，禁止补单。")
+            return
+        if record.group_label == "Close Only" or record.order_ref.startswith("UW-"):
+            QMessageBox.warning(
+                self,
+                "Close Only 禁止直接补单",
+                "请先刷新 TWS 订单状态，等待所有活动订单结束，再重新生成 Close Only 预览。",
+            )
+            return
         if self.monitor_record_is_active(record):
             QMessageBox.warning(self, "无法补单", "该订单仍是活动状态。请先撤单并刷新状态，再做补单。")
             return
-        quantity = self.resubmit_qty_spin.value()
+        if record.remaining <= 0:
+            QMessageBox.warning(self, "无法补单", "该订单没有可确认的剩余数量。")
+            return
+        quantity = min(self.resubmit_qty_spin.value(), int(round(record.remaining)))
+        if quantity <= 0:
+            QMessageBox.warning(self, "无法补单", "剩余数量不足 1 股。")
+            return
         order_type = "MKT" if self.resubmit_mode_combo.currentText() == "市价" else "OPPONENT"
         tif, outside_rth = self.current_common_order_settings()
         if not self.confirm_order_submission(
@@ -1161,6 +1503,22 @@ class MainWindow(QMainWindow):
     def can_execute_component_buy(self) -> bool:
         return bool(self.snapshot and self.current_account() and self.planned_component_orders("BUY"))
 
+    def can_execute_close_only(self) -> bool:
+        tif, outside_rth = self.current_common_order_settings()
+        return bool(
+            self.close_plan
+            and self.close_plan.account == self.current_account()
+            and self.close_plan.can_execute
+            and tif == "DAY"
+            and not outside_rth
+        )
+
+    def close_preview_locks_legacy(self) -> bool:
+        return bool(
+            self.close_plan
+            and (self.close_plan.lines or self.close_plan.blockers)
+        )
+
     def can_execute_component_sell(self) -> bool:
         if not (self.snapshot and self.current_account() and self.component_rows() and self.planned_component_orders("SELL")):
             return False
@@ -1186,11 +1544,28 @@ class MainWindow(QMainWindow):
 
     def update_execution_controls(self) -> None:
         active = self.active_workers == 0
-        self.buy_components_button.setEnabled(active and self.can_execute_component_buy())
-        self.sell_components_button.setEnabled(active and self.can_execute_component_sell())
-        self.submit_xop_button.setEnabled(active and self.can_submit_xop())
+        legacy_locked = self.close_session_guard or self.close_preview_locks_legacy()
+        legacy_allowed = not legacy_locked
+        self.refresh_close_button.setEnabled(
+            active and self.basket is not None and bool(self.current_account())
+        )
+        self.execute_close_button.setEnabled(active and self.can_execute_close_only())
+        self.buy_components_button.setEnabled(active and legacy_allowed and self.can_execute_component_buy())
+        self.sell_components_button.setEnabled(active and legacy_allowed and self.can_execute_component_sell())
+        self.submit_xop_button.setEnabled(active and legacy_allowed and self.can_submit_xop())
 
-        if not self.basket:
+        if bool(self.config.get("outside_rth")):
+            self.close_note.setText(
+                "Close Only 安全模式禁止 Outside RTH。请在设置中关闭后重新生成预览。"
+            )
+        elif str(self.config.get("tif") or "DAY").upper() != "DAY":
+            self.close_note.setText(
+                "Close Only 安全模式仅允许 DAY。请在设置中改为 DAY 后重新生成预览。"
+            )
+
+        if legacy_locked:
+            self.component_note.setText("Close Only 预览或会话进行中，已锁定旧的成分券建仓入口。")
+        elif not self.basket:
             self.component_note.setText("先在菜单“设置”里配置篮子文件。")
         elif not self.snapshot:
             self.component_note.setText("先连接 TWS，再按需分别刷新持仓和券源。")
@@ -1230,10 +1605,134 @@ class MainWindow(QMainWindow):
         tif, outside_rth = self.current_common_order_settings()
         outside_text = "On" if outside_rth else "Off"
         price_hint = f"当前参考价 {market_price:.2f}" if market_price > 0 else "当前未拿到 XOP 行情"
-        self.xop_note.setText(
-            f"{price_hint}。通用参数 {tif} / Outside RTH {outside_text}；"
-            f"{BASE_SYMBOL} 数量和限价均由你手动控制。"
+        if legacy_locked:
+            self.xop_note.setText("Close Only 预览或会话进行中，已锁定 XOP 手动下单入口。")
+        else:
+            self.xop_note.setText(
+                f"{price_hint}。通用参数 {tif} / Outside RTH {outside_text}；"
+                f"{BASE_SYMBOL} 数量和限价均由你手动控制。"
+            )
+
+    def execute_close_only_batch(self) -> None:
+        plan = self.close_plan
+        if plan is None:
+            QMessageBox.warning(self, "无法执行", "请先生成 Close Only 只读预览。")
+            return
+        if not self.can_execute_close_only():
+            reasons = list(plan.blockers)
+            if bool(self.config.get("outside_rth")):
+                reasons.append("Close Only 禁止 Outside RTH")
+            if str(self.config.get("tif") or "DAY").upper() != "DAY":
+                reasons.append("Close Only 仅允许 DAY")
+            message = "\n".join(f"- {item}" for item in reasons) or "计划已失效或当前状态不可执行。"
+            QMessageBox.warning(self, "Close Only 预检未通过", message)
+            return
+        if not self.basket:
+            QMessageBox.warning(self, "无法执行", "篮子文件当前不可用。")
+            return
+
+        line_preview = [
+            f"{line.symbol} {line.action} {line.quantity:,}  "
+            f"({fmt_qty(line.current_position)} -> {fmt_qty(line.projected_position)})"
+            for line in plan.lines[:14]
+        ]
+        if len(plan.lines) > 14:
+            line_preview.append(f"... 其余 {len(plan.lines) - 14} 行略")
+        warning_text = "\n".join(f"提醒：{item}" for item in plan.warnings)
+        first = QMessageBox.question(
+            self,
+            "确认 Close Only 计划",
+            f"账户：{plan.account}\n"
+            f"计划：{plan.plan_id} / 指纹 {plan.approval_fingerprint[:12]}\n"
+            f"本批：{plan.tranche_percent}%\n"
+            f"成分券：仅 BUY，{len(plan.component_lines)} 笔，共 {plan.total_component_buy_qty:,} 股\n"
+            f"{BASE_SYMBOL}：仅 SELL，最多 {plan.total_base_sell_qty:,} 股\n"
+            f"定价：{self.close_pricing_combo.currentText()}\n\n"
+            + "\n".join(line_preview)
+            + (f"\n\n{warning_text}" if warning_text else "")
+            + "\n\nXOP 实际卖出量会按已观察到的成分券成交量再次收紧，不会超过预览上限。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
         )
+        if first != QMessageBox.Yes:
+            return
+
+        account_suffix = plan.account[-4:] if len(plan.account) >= 4 else plan.account
+        required_phrase = f"平仓到0 {account_suffix}"
+        typed, accepted = QInputDialog.getText(
+            self,
+            "输入执行口令",
+            f"请输入：{required_phrase}\n（用于确认账户和仅平仓方向）",
+        )
+        if not accepted:
+            return
+        if typed.strip() != required_phrase:
+            QMessageBox.warning(self, "口令不匹配", "未提交任何订单。请重新生成预览后再操作。")
+            self.invalidate_close_plan("确认口令不匹配，原预览已失效")
+            return
+
+        tif, outside_rth = self.current_common_order_settings()
+        pricing_mode = "MKT" if self.close_pricing_combo.currentText().startswith("市价") else "OPPONENT"
+        final = QMessageBox.question(
+            self,
+            "最终确认：发送 Close Only",
+            f"即将向 TWS 账户 {plan.account} 发送 Close Only 本批订单。\n"
+            f"方向硬限制：成分券 BUY / {BASE_SYMBOL} SELL；任何实时差异都会在首单前阻塞。\n"
+            f"模式：{pricing_mode} / TIF {tif} / Outside RTH Off\n"
+            f"计划指纹：{plan.approval_fingerprint}\n\n是否立即执行？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if final != QMessageBox.Yes:
+            return
+
+        settings = self.gather_connection_settings()
+        basket = self.basket
+        self.start_worker(
+            lambda: execute_close_only_plan(
+                settings,
+                basket,
+                plan,
+                pricing_mode=pricing_mode,
+                tif=tif,
+                outside_rth=outside_rth,
+            ),
+            self.on_close_only_execution_finished,
+            busy_message="执行 Close Only 中",
+            log_message=(
+                f"开始执行 Close Only plan={plan.plan_id} fingerprint={plan.approval_fingerprint[:12]} "
+                f"tranche={plan.tranche_percent}%"
+            ),
+        )
+
+    def on_close_only_execution_finished(self, result) -> None:
+        self.snapshot = result.snapshot
+        self.positions = result.positions_after
+        if result.orders:
+            self.register_monitor_orders(result.orders, "Close Only")
+        order_lines = [
+            f"{order.symbol} {order.action} {order.quantity:,} {order.order_type} "
+            f"status={order.status} orderId={order.order_id} ref={order.order_ref}"
+            for order in result.orders
+        ]
+        summary = (
+            f"状态：{result.status}\n"
+            f"已捕获提交记录：{len(result.orders)} 笔\n"
+            + ("\n".join(order_lines[:12]) if order_lines else "没有订单被提交")
+        )
+        if len(order_lines) > 12:
+            summary += f"\n... 其余 {len(order_lines) - 12} 笔见监控表"
+        if result.error:
+            summary += f"\n\n流程已暂停：{result.error}\n请勿手工重复补单；先刷新订单状态和 Close Only 预览。"
+        self.append_log(summary.replace("\n", " | "))
+        self.close_plan = None
+        self.close_active_orders = ()
+        self.close_session_guard = result.status != "COMPLETE"
+        self.refresh_views()
+        if result.error:
+            QMessageBox.critical(self, "Close Only 已暂停", summary)
+        else:
+            QMessageBox.information(self, "Close Only 本批结果", summary)
 
     def submit_component_basket(self, action: str) -> None:
         action = action.upper()

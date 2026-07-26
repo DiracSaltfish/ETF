@@ -21,9 +21,6 @@ DEFAULT_TRANSFER_CONTRACT_GAP = 1000
 QMT3_TRANSFER_PRICE_TOLERANCE = Decimal("0.002")
 REDEMPTION_SOURCES = frozenset({"QMT1", "QMT2"})
 QMT3_SOURCE = "QMT3"
-COMPONENT_SHORT_MIN_SYMBOLS = 10
-COMPONENT_WINDOW_BEFORE_MINUTES = 5
-COMPONENT_WINDOW_AFTER_MINUTES = 20
 IB_STATEMENT_TZ = ZoneInfo("America/New_York")
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
 CHINA_SESSION_START = time(9, 0)
@@ -259,6 +256,44 @@ class IbSlice:
 
 
 @dataclass(frozen=True)
+class SyntheticBaseRecord:
+    """One persistent manual classification of an original IB XOP fill."""
+
+    event_id: str
+    position_id: str
+    event_type: str
+    trade_id: str
+    configured_qty: int
+    matched_qty: int
+    trade_dt: datetime | None
+    side: str
+    price: Decimal
+    original_qty: int
+    status: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class SyntheticBaseApplication:
+    tradable_trades: tuple[IbTrade, ...]
+    excluded_slices: tuple[IbSlice, ...]
+    records: tuple[SyntheticBaseRecord, ...]
+    configured_establish_qty: int
+    configured_unwind_qty: int
+    matched_establish_qty: int
+    matched_unwind_qty: int
+    warnings: tuple[str, ...]
+
+    @property
+    def configured_active_qty(self) -> int:
+        return self.configured_establish_qty - self.configured_unwind_qty
+
+    @property
+    def matched_active_qty(self) -> int:
+        return self.matched_establish_qty - self.matched_unwind_qty
+
+
+@dataclass(frozen=True)
 class BorrowFee:
     value_day: date
     qty: int
@@ -350,6 +385,19 @@ class CalculationResult:
     residual_ib_buy_qty: int = 0
     ib_allocations: tuple[IbAllocationClaim, ...] = ()
     allocation_warnings: tuple[str, ...] = ()
+    raw_ib_trades: tuple[IbTrade, ...] = ()
+    synthetic_base_records: tuple[SyntheticBaseRecord, ...] = ()
+    synthetic_base_event_slices: tuple[IbSlice, ...] = ()
+    synthetic_base_establish_qty: int = 0
+    synthetic_base_unwind_qty: int = 0
+    synthetic_base_establish_matched_qty: int = 0
+    synthetic_base_unwind_matched_qty: int = 0
+    synthetic_base_active_qty: int = 0
+    synthetic_base_seed_qty: int = 0
+    synthetic_base_seed_matched_qty: int = 0
+    synthetic_base_seed_slices: tuple[IbSlice, ...] = ()
+    raw_ib_position_qty: int = 0
+    effective_ib_position_qty: int = 0
     warnings: tuple[str, ...] = ()
 
     @property
@@ -512,13 +560,54 @@ def _contract_distance(left: int | str, right: int | str) -> int | None:
     return abs(int(left_text) - int(right_text))
 
 
+def _is_qmt_delimited_text(path: Path) -> bool:
+    """Detect QMT's tab-delimited text export that is named ``*.xls``."""
+    with path.open("rb") as handle:
+        header = handle.read(8192)
+    if header.startswith((b"\xd0\xcf\x11\xe0", b"PK\x03\x04")):
+        return False
+    return (b"\t" in header or b"\t\x00" in header) and (
+        b"\n" in header or b"\n\x00" in header
+    )
+
+
+def _read_qmt_frame(path: Path) -> pd.DataFrame:
+    if not _is_qmt_delimited_text(path):
+        frame = pd.read_excel(path)
+    else:
+        with path.open("rb") as handle:
+            header = handle.read(8192)
+        if header.startswith((b"\xff\xfe", b"\xfe\xff")) or header.count(b"\x00") > len(header) // 4:
+            encodings = ("utf-16", "utf-16-le", "utf-8-sig", "gb18030")
+        else:
+            encodings = ("utf-8-sig", "gb18030")
+        decode_errors: list[str] = []
+        for encoding in encodings:
+            try:
+                frame = pd.read_csv(
+                    path,
+                    sep="\t",
+                    encoding=encoding,
+                    dtype=object,
+                    keep_default_na=False,
+                )
+                break
+            except UnicodeError as exc:
+                decode_errors.append(f"{encoding}: {exc}")
+        else:
+            detail = " | ".join(decode_errors)
+            raise ValueError(f"{path.name} 文本编码无法识别: {detail}")
+    frame.columns = [str(column).replace("\ufeff", "").strip() for column in frame.columns]
+    return frame
+
+
 def load_qmt_file(path: Path | str | None, source: str) -> list[QmtRecord]:
     if path is None or not str(path).strip():
         return []
     file_path = Path(path).expanduser().resolve()
     if not file_path.exists():
         raise FileNotFoundError(f"{source} 文件不存在: {file_path}")
-    frame = pd.read_excel(file_path)
+    frame = _read_qmt_frame(file_path)
     columns = _required_columns(frame, file_path, source)
     records: list[QmtRecord] = []
     for row_number, row in frame.iterrows():
@@ -814,27 +903,6 @@ def load_ib_stock_trades(path: Path | str) -> list[IbStockTrade]:
     return trades
 
 
-def _component_short_windows(stock_trades: list[IbStockTrade]) -> tuple[tuple[datetime, datetime], ...]:
-    by_day: dict[date, list[IbStockTrade]] = {}
-    for trade in stock_trades:
-        if trade.symbol == TARGET_FOREIGN_CODE or trade.qty >= 0:
-            continue
-        by_day.setdefault(trade.dt.date(), []).append(trade)
-    windows: list[tuple[datetime, datetime]] = []
-    for day_trades in by_day.values():
-        symbols = {item.symbol for item in day_trades}
-        if len(symbols) < COMPONENT_SHORT_MIN_SYMBOLS:
-            continue
-        start = min(item.dt for item in day_trades) - timedelta(minutes=COMPONENT_WINDOW_BEFORE_MINUTES)
-        end = max(item.dt for item in day_trades) + timedelta(minutes=COMPONENT_WINDOW_AFTER_MINUTES)
-        windows.append((start, end))
-    return tuple(sorted(windows))
-
-
-def _in_component_window(moment: datetime, windows: tuple[tuple[datetime, datetime], ...]) -> bool:
-    return any(start <= moment <= end for start, end in windows)
-
-
 def _derive_ib_trade(raw: IbTrade, qty: int, role: str, index: int) -> IbTrade:
     ratio = Decimal(qty) / Decimal(abs(raw.qty))
     signed_qty = -qty if raw.qty < 0 else qty
@@ -849,6 +917,14 @@ def _derive_ib_trade(raw: IbTrade, qty: int, role: str, index: int) -> IbTrade:
         commission=raw.commission * ratio,
         marker=marker,
     )
+
+
+def source_ib_trade_id(trade_id: str) -> str:
+    """Resolve a derived direct-open/close ID back to its original IB fill ID."""
+    for marker in (":direct_open:", ":direct_close:"):
+        if marker in trade_id:
+            return trade_id.split(marker, 1)[0]
+    return trade_id
 
 
 def _synthetic_ib_trade(
@@ -877,56 +953,515 @@ def build_ib_hedge_trades(
     xop_trades: list[IbTrade],
     stock_trades: list[IbStockTrade],
     *,
-    include_unmatched_buys: bool = False,
+    include_unmatched_buys: bool = True,
 ) -> list[IbTrade]:
-    """Derive the XOP-equivalent hedge stream used by basket matching.
+    """Convert every non-excluded XOP fill into the normal hedge stream.
 
-    Component-stock short windows mark nearby XOP buys as base inventory rather
-    than ordinary redemption closes. Selling that base inventory later becomes
-    an XOP-equivalent synthetic short open priced at the XOP sale.
+    Synthetic-base seed buys are removed explicitly before this function is
+    called.  No component-stock window or time boundary changes the remaining
+    fills: every SELL is an open and every BUY is a close.  The two legacy
+    parameters remain in the signature for caller compatibility only.
     """
-    windows = _component_short_windows(stock_trades)
+    del stock_trades, include_unmatched_buys
     derived: list[IbTrade] = []
-    direct_short_qty = 0
-    xop_base_qty = 0
-    component_equivalent_qty = 0
-    sequence = 0
-    for trade in xop_trades:
-        remaining = abs(trade.qty)
-        in_component_window = _in_component_window(trade.dt, windows)
-        if trade.qty < 0:
-            if xop_base_qty:
-                used = min(xop_base_qty, remaining)
-                if used:
-                    sequence += 1
-                    derived.append(_derive_ib_trade(trade, used, "synthetic_open", sequence))
-                    xop_base_qty -= used
-                    remaining -= used
-            if remaining:
-                sequence += 1
-                derived.append(_derive_ib_trade(trade, remaining, "direct_open", sequence))
-                direct_short_qty += remaining
-            continue
-
-        if in_component_window:
-            component_equivalent_qty += remaining
-        if direct_short_qty:
-            used = min(direct_short_qty, remaining)
-            if used:
-                sequence += 1
-                derived.append(_derive_ib_trade(trade, used, "direct_close", sequence))
-                direct_short_qty -= used
-                remaining -= used
-        if remaining and in_component_window:
-            component_gap = max(0, component_equivalent_qty - xop_base_qty)
-            used = min(component_gap if component_gap else remaining, remaining)
-            xop_base_qty += used
-            remaining -= used
-        if remaining and include_unmatched_buys:
-            sequence += 1
-            derived.append(_derive_ib_trade(trade, remaining, "direct_close", sequence))
+    for sequence, trade in enumerate(xop_trades, start=1):
+        role = "direct_open" if trade.qty < 0 else "direct_close"
+        derived.append(_derive_ib_trade(trade, abs(trade.qty), role, sequence))
     derived.sort(key=lambda item: (item.dt, item.row_number, item.id))
     return derived
+
+
+def normalize_strategy_annotations(payload: dict[str, object] | None) -> dict[str, object]:
+    """Return the canonical v2 synthetic-base event schema.
+
+    Version 1 seed BUY records are migrated in memory to establish events.  The
+    caller persists the canonical payload on the next edit, so old installations
+    remain readable without losing their component-stock audit metadata.
+    """
+    source = dict(payload or {})
+    raw_positions = source.get("synthetic_base_positions")
+    if not isinstance(raw_positions, list):
+        raw_positions = source.get("positions")
+    positions = [dict(item) for item in (raw_positions or []) if isinstance(item, dict)]
+
+    raw_events = source.get("synthetic_base_events")
+    if isinstance(raw_events, list):
+        candidates = [dict(item) for item in raw_events if isinstance(item, dict)]
+    else:
+        candidates = []
+        raw_seeds = source.get("synthetic_base_seeds")
+        if isinstance(raw_seeds, list):
+            for seed in raw_seeds:
+                if not isinstance(seed, dict):
+                    continue
+                item = dict(seed)
+                item.setdefault("event_type", "establish")
+                item.setdefault("side", "BUY")
+                item.setdefault("event_id", f"establish-{item.get('trade_id') or len(candidates) + 1}")
+                candidates.append(item)
+
+    events: list[dict[str, object]] = []
+    for index, candidate in enumerate(candidates, start=1):
+        event = dict(candidate)
+        event_type = str(event.get("event_type") or "establish").strip().lower()
+        trade_id = str(event.get("trade_id") or "").strip()
+        event["event_type"] = event_type
+        event["trade_id"] = trade_id
+        event["side"] = str(
+            event.get("side") or ("BUY" if event_type == "establish" else "SELL")
+        ).strip().upper()
+        event["event_id"] = str(
+            event.get("event_id") or f"{event_type}-{trade_id or index}"
+        ).strip()
+        event["position_id"] = str(
+            event.get("position_id") or "synthetic-base-default"
+        ).strip()
+        event.setdefault("enabled", True)
+        events.append(event)
+
+    known_positions = {
+        str(item.get("position_id") or "").strip()
+        for item in positions
+        if str(item.get("position_id") or "").strip()
+    }
+    for event in events:
+        position_id = str(event.get("position_id") or "synthetic-base-default").strip()
+        if position_id in known_positions:
+            continue
+        positions.append({
+            "position_id": position_id,
+            "name": "合成底仓",
+            "status": "active",
+            "note": "由历史标记自动迁移",
+        })
+        known_positions.add(position_id)
+
+    canonical = {
+        key: value
+        for key, value in source.items()
+        if key not in {"version", "positions", "synthetic_base_seeds", "synthetic_base_positions", "synthetic_base_events"}
+    }
+    canonical.update({
+        "version": 2,
+        "description": "仅人工指定的XOP建立/消融合成底仓成交从赎回主账排除；其余成交按原时间顺序正常处理。",
+        "synthetic_base_positions": positions,
+        "synthetic_base_events": events,
+    })
+    return canonical
+
+
+def load_strategy_annotations(path: Path | str) -> dict[str, object]:
+    file_path = Path(path)
+    if not file_path.exists():
+        return normalize_strategy_annotations({})
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"合成底仓标记文件无法读取: {file_path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"合成底仓标记文件顶层必须是JSON对象: {file_path}")
+    return normalize_strategy_annotations(payload)
+
+
+def save_strategy_annotations(path: Path | str, payload: dict[str, object]) -> None:
+    file_path = Path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = normalize_strategy_annotations(payload)
+    temp_path = file_path.with_name(f".{file_path.name}.tmp")
+    try:
+        temp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(file_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def synthetic_base_events(payload: dict[str, object] | None) -> list[dict[str, object]]:
+    raw = normalize_strategy_annotations(payload).get("synthetic_base_events", [])
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def synthetic_base_event_qty_by_trade(payload: dict[str, object] | None) -> dict[str, int]:
+    quantities: dict[str, int] = {}
+    for item in synthetic_base_events(payload):
+        if not bool(item.get("enabled", True)):
+            continue
+        trade_id = str(item.get("trade_id") or "").strip()
+        try:
+            qty = int(item.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if trade_id and qty > 0:
+            quantities[trade_id] = quantities.get(trade_id, 0) + qty
+    return quantities
+
+
+def synthetic_base_configured_totals(payload: dict[str, object] | None) -> tuple[int, int, int]:
+    establish = 0
+    unwind = 0
+    for item in synthetic_base_events(payload):
+        if not bool(item.get("enabled", True)):
+            continue
+        try:
+            qty = int(item.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
+        event_type = str(item.get("event_type") or "").strip().lower()
+        if event_type == "establish":
+            establish += qty
+        elif event_type == "unwind":
+            unwind += qty
+    return establish, unwind, establish - unwind
+
+
+def synthetic_base_balance_errors(payload: dict[str, object] | None) -> tuple[str, ...]:
+    active_by_position: dict[str, int] = {}
+    errors: list[str] = []
+    events = [item for item in synthetic_base_events(payload) if bool(item.get("enabled", True))]
+    events.sort(key=lambda item: (
+        str(item.get("trade_dt") or ""),
+        0 if str(item.get("event_type") or "").lower() == "establish" else 1,
+        str(item.get("event_id") or ""),
+    ))
+    for item in events:
+        event_id = str(item.get("event_id") or "未命名事件")
+        event_type = str(item.get("event_type") or "").strip().lower()
+        position_id = str(item.get("position_id") or "synthetic-base-default").strip()
+        try:
+            qty = int(item.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if event_type not in {"establish", "unwind"} or qty <= 0:
+            errors.append(f"{event_id} 的类型或数量无效")
+            continue
+        expected_side = "BUY" if event_type == "establish" else "SELL"
+        configured_side = str(item.get("side") or expected_side).strip().upper()
+        if configured_side != expected_side:
+            errors.append(f"{event_id} 方向应为 {expected_side}")
+            continue
+        active = active_by_position.get(position_id, 0)
+        if event_type == "establish":
+            active_by_position[position_id] = active + qty
+        elif qty > active:
+            errors.append(f"{event_id} 消融 {qty:,} 股，超过当时可用合成底仓 {active:,} 股")
+        else:
+            active_by_position[position_id] = active - qty
+    return tuple(errors)
+
+
+def default_synthetic_base_position_id(payload: dict[str, object] | None) -> str:
+    normalized = normalize_strategy_annotations(payload)
+    positions = normalized.get("synthetic_base_positions", [])
+    if isinstance(positions, list):
+        for item in positions:
+            if not isinstance(item, dict) or str(item.get("status") or "active").lower() == "closed":
+                continue
+            position_id = str(item.get("position_id") or "").strip()
+            if position_id:
+                return position_id
+    return "synthetic-base-default"
+
+
+def add_synthetic_base_events(
+    payload: dict[str, object] | None,
+    trades: Iterable[IbTrade],
+    event_type: str,
+    quantities: dict[str, int],
+    position_id: str | None = None,
+) -> dict[str, object]:
+    event_type = event_type.strip().lower()
+    if event_type not in {"establish", "unwind"}:
+        raise ValueError("合成底仓事件类型必须为 establish 或 unwind")
+    expected_side = "BUY" if event_type == "establish" else "SELL"
+    normalized = normalize_strategy_annotations(payload)
+    events = normalized["synthetic_base_events"]
+    assert isinstance(events, list)
+    trade_by_id = {item.id: item for item in trades}
+    already_used = synthetic_base_event_qty_by_trade(normalized)
+    selected_position = position_id or default_synthetic_base_position_id(normalized)
+    positions = normalized["synthetic_base_positions"]
+    assert isinstance(positions, list)
+    if selected_position not in {
+        str(item.get("position_id") or "") for item in positions if isinstance(item, dict)
+    }:
+        positions.append({
+            "position_id": selected_position,
+            "name": "合成底仓",
+            "status": "active",
+            "note": "由篮子配对图人工建立",
+        })
+
+    for trade_id, requested_qty in quantities.items():
+        trade = trade_by_id.get(str(trade_id))
+        if trade is None:
+            raise ValueError(f"当前IB报表中找不到成交：{trade_id}")
+        if trade.side != expected_side:
+            raise ValueError(f"{event_type} 只能选择 {expected_side}，但 {trade.id} 是 {trade.side}")
+        qty = int(requested_qty)
+        available = abs(trade.qty) - already_used.get(trade.id, 0)
+        if qty <= 0 or qty > available:
+            raise ValueError(f"{trade.id} 可标记 {available:,} 股，本次请求 {qty:,} 股")
+        identity = f"{selected_position}|{event_type}|{trade.id}|{len(events)}"
+        event_id = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:20]
+        events.append({
+            "event_id": event_id,
+            "position_id": selected_position,
+            "event_type": event_type,
+            "trade_id": trade.id,
+            "trade_dt": trade.dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "side": trade.side,
+            "qty": qty,
+            "original_qty": abs(trade.qty),
+            "price": str(trade.price),
+            "enabled": True,
+            "note": "篮子配对图人工指定",
+        })
+        already_used[trade.id] = already_used.get(trade.id, 0) + qty
+
+    errors = synthetic_base_balance_errors(normalized)
+    if errors:
+        raise ValueError("；".join(errors))
+    return normalized
+
+
+def remove_synthetic_base_events(
+    payload: dict[str, object] | None,
+    event_ids: Iterable[str],
+) -> dict[str, object]:
+    normalized = normalize_strategy_annotations(payload)
+    selected = {str(item) for item in event_ids}
+    events = normalized.get("synthetic_base_events", [])
+    if not isinstance(events, list):
+        return normalized
+    normalized["synthetic_base_events"] = [
+        item for item in events
+        if not isinstance(item, dict) or str(item.get("event_id") or "") not in selected
+    ]
+    errors = synthetic_base_balance_errors(normalized)
+    if errors:
+        raise ValueError("移除后合成底仓数量不守恒：" + "；".join(errors))
+    return normalized
+
+
+def _annotation_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def apply_synthetic_base_event_exclusions(
+    xop_trades: list[IbTrade],
+    annotations: dict[str, object] | None,
+) -> SyntheticBaseApplication:
+    """Exclude only valid, explicitly classified establish/unwind quantities."""
+    events = synthetic_base_events(annotations)
+    raw_by_id = {item.id: item for item in xop_trades}
+    warnings: list[str] = []
+    seen_event_ids: set[str] = set()
+    states: list[dict[str, object]] = []
+
+    for index, item in enumerate(events, start=1):
+        if not bool(item.get("enabled", True)):
+            continue
+        event_id = str(item.get("event_id") or f"event-{index}").strip()
+        trade_id = str(item.get("trade_id") or "").strip()
+        event_type = str(item.get("event_type") or "").strip().lower()
+        position_id = str(item.get("position_id") or "synthetic-base-default").strip()
+        expected_side = "BUY" if event_type == "establish" else "SELL"
+        reason = ""
+        try:
+            qty = int(item.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if event_id in seen_event_ids:
+            reason = "事件ID重复"
+        elif not trade_id or qty <= 0:
+            reason = "缺少有效交易ID或数量"
+        elif event_type not in {"establish", "unwind"}:
+            reason = "事件类型无效"
+        elif str(item.get("side") or expected_side).strip().upper() != expected_side:
+            reason = f"方向应为{expected_side}"
+        seen_event_ids.add(event_id)
+        states.append({
+            "index": index,
+            "item": item,
+            "event_id": event_id,
+            "trade_id": trade_id,
+            "event_type": event_type,
+            "position_id": position_id,
+            "expected_side": expected_side,
+            "qty": qty,
+            "reason": reason,
+        })
+
+    active_by_position: dict[str, int] = {}
+    for state in sorted(states, key=lambda value: (
+        str(dict(value["item"]).get("trade_dt") or ""),
+        0 if value["event_type"] == "establish" else 1,
+        int(value["index"]),
+    )):
+        if state["reason"]:
+            continue
+        position_id = str(state["position_id"])
+        qty = int(state["qty"])
+        active = active_by_position.get(position_id, 0)
+        if state["event_type"] == "establish":
+            active_by_position[position_id] = active + qty
+        elif qty > active:
+            state["reason"] = f"消融{qty:,}股超过当时可用底仓{active:,}股"
+        else:
+            active_by_position[position_id] = active - qty
+
+    configured_establish = sum(
+        int(item["qty"]) for item in states
+        if not item["reason"] and item["event_type"] == "establish"
+    )
+    configured_unwind = sum(
+        int(item["qty"]) for item in states
+        if not item["reason"] and item["event_type"] == "unwind"
+    )
+    consumed_by_trade: dict[str, int] = {}
+    excluded_by_trade: dict[str, int] = {}
+    excluded: list[IbSlice] = []
+    records: list[SyntheticBaseRecord] = []
+    matched_establish = 0
+    matched_unwind = 0
+
+    for state in states:
+        spec = dict(state["item"])
+        trade = raw_by_id.get(str(state["trade_id"]))
+        qty = int(state["qty"])
+        reason = str(state["reason"])
+        mismatch: list[str] = []
+        if not reason and trade is None:
+            mismatch.append("不在当前IB报表范围内")
+        if not reason and trade is not None:
+            if trade.side != state["expected_side"]:
+                mismatch.append(f"实际方向为{trade.side}")
+            expected_dt = str(spec.get("trade_dt") or "").strip()
+            actual_dt = trade.dt.strftime("%Y-%m-%d %H:%M:%S")
+            if expected_dt and expected_dt != actual_dt:
+                mismatch.append(f"时间{actual_dt}≠{expected_dt}")
+            expected_original_qty = spec.get("original_qty")
+            if expected_original_qty not in (None, ""):
+                try:
+                    if abs(trade.qty) != int(expected_original_qty):
+                        mismatch.append(f"原始数量{abs(trade.qty)}≠{expected_original_qty}")
+                except (TypeError, ValueError):
+                    mismatch.append("配置原始数量无效")
+            expected_price = spec.get("price")
+            if expected_price not in (None, "") and trade.price != d(expected_price):
+                mismatch.append(f"价格{trade.price}≠{expected_price}")
+            already = consumed_by_trade.get(trade.id, 0)
+            if already + qty > abs(trade.qty):
+                mismatch.append(f"累计排除{already + qty}超过成交{abs(trade.qty)}")
+
+        matched_qty = 0
+        status = "配置无效" if reason else ("校验失败" if mismatch else "已排除")
+        if not reason and not mismatch and trade is not None:
+            matched_qty = qty
+            consumed_by_trade[trade.id] = consumed_by_trade.get(trade.id, 0) + qty
+            excluded_by_trade[trade.id] = excluded_by_trade.get(trade.id, 0) + qty
+            ratio = Decimal(qty) / Decimal(abs(trade.qty))
+            role = f"synthetic_base_{state['event_type']}"
+            excluded.append(IbSlice(
+                trade_id=trade.id,
+                dt=trade.dt,
+                side=trade.side,
+                qty=qty,
+                price=trade.price,
+                gross=trade.gross * ratio,
+                commission=trade.commission * ratio,
+                role=role,
+            ))
+            if state["event_type"] == "establish":
+                matched_establish += qty
+            else:
+                matched_unwind += qty
+        else:
+            detail = reason or "；".join(mismatch)
+            warnings.append(f"合成底仓事件 {state['event_id']} 未排除：{detail}")
+
+        record_dt = trade.dt if trade is not None else _annotation_datetime(spec.get("trade_dt"))
+        record_side = trade.side if trade is not None else str(state["expected_side"])
+        record_price = trade.price if trade is not None else d(spec.get("price"))
+        try:
+            original_qty = abs(trade.qty) if trade is not None else int(spec.get("original_qty") or 0)
+        except (TypeError, ValueError):
+            original_qty = 0
+        records.append(SyntheticBaseRecord(
+            event_id=str(state["event_id"]),
+            position_id=str(state["position_id"]),
+            event_type=str(state["event_type"]),
+            trade_id=str(state["trade_id"]),
+            configured_qty=qty,
+            matched_qty=matched_qty,
+            trade_dt=record_dt,
+            side=record_side,
+            price=record_price,
+            original_qty=original_qty,
+            status=status,
+            note=str(spec.get("note") or ""),
+        ))
+
+    filtered: list[IbTrade] = []
+    for trade in xop_trades:
+        excluded_qty = excluded_by_trade.get(trade.id, 0)
+        remaining_qty = abs(trade.qty) - excluded_qty
+        if remaining_qty <= 0:
+            continue
+        ratio = Decimal(remaining_qty) / Decimal(abs(trade.qty))
+        signed_qty = -remaining_qty if trade.qty < 0 else remaining_qty
+        remainder_marker = trade.marker
+        if excluded_qty:
+            remainder_marker = (
+                f"{trade.marker};MANUAL_SYNTHETIC_BASE_REMAINDER"
+                if trade.marker else "MANUAL_SYNTHETIC_BASE_REMAINDER"
+            )
+        filtered.append(replace(
+            trade,
+            qty=signed_qty,
+            gross=trade.gross * ratio,
+            commission=trade.commission * ratio,
+            marker=remainder_marker,
+        ))
+
+    filtered.sort(key=lambda item: (item.dt, item.row_number, item.id))
+    excluded.sort(key=lambda item: (item.dt, item.trade_id, item.role))
+    records.sort(key=lambda item: (item.trade_dt or datetime.min, item.event_id))
+    return SyntheticBaseApplication(
+        tradable_trades=tuple(filtered),
+        excluded_slices=tuple(excluded),
+        records=tuple(records),
+        configured_establish_qty=configured_establish,
+        configured_unwind_qty=configured_unwind,
+        matched_establish_qty=matched_establish,
+        matched_unwind_qty=matched_unwind,
+        warnings=tuple(warnings),
+    )
+
+
+def apply_synthetic_base_seed_exclusions(
+    xop_trades: list[IbTrade],
+    annotations: dict[str, object] | None,
+) -> tuple[list[IbTrade], tuple[IbSlice, ...], int, tuple[str, ...]]:
+    """Compatibility wrapper for callers that only understand legacy BUY seeds."""
+    outcome = apply_synthetic_base_event_exclusions(xop_trades, annotations)
+    seed_slices = tuple(
+        item for item in outcome.excluded_slices if item.role == "synthetic_base_establish"
+    )
+    return (
+        list(outcome.tradable_trades),
+        seed_slices,
+        outcome.configured_establish_qty,
+        outcome.warnings,
+    )
 
 
 def _used_domestic_buy_qty(
@@ -1920,7 +2455,8 @@ def _trade_role(trade: IbTrade) -> str:
 
 
 def _trade_selected(trade_id: str, selected: set[str]) -> bool:
-    return trade_id in selected or trade_id.split(":", 1)[0] in selected
+    selected_keys = {_selection_key(item) for item in selected}
+    return _selection_key(trade_id) in selected_keys
 
 
 def _selection_key(trade_id: str) -> str:
@@ -1983,6 +2519,7 @@ def _take_ib_slices(
     remaining = target
     slices: list[IbSlice] = []
     selected = set(selected_ids or ())
+    reserved_keys = {_selection_key(item) for item in reserved_ids}
     manual = selected_ids is not None
     for trade in trades:
         if remaining <= 0:
@@ -1995,7 +2532,7 @@ def _take_ib_slices(
             continue
         if manual and not _trade_selected(trade.id, selected):
             continue
-        if not manual and trade.id in reserved_ids:
+        if not manual and _selection_key(trade.id) in reserved_keys:
             continue
         available = capacities.get(trade.id, 0)
         if available <= 0:
@@ -2625,11 +3162,14 @@ def calculate(
     transfer_contract_gap: int = DEFAULT_TRANSFER_CONTRACT_GAP,
     hedge_targets: dict[str, int] | None = None,
     qmt_time_root: Path | str | None = None,
+    strategy_annotations: dict[str, object] | None = None,
 ) -> CalculationResult:
     records = load_qmt_records(qmt_paths, qmt_time_root)
     raw_ib_trades, borrow_fees = load_ib_statement(ib_path)
+    synthetic_base = apply_synthetic_base_event_exclusions(raw_ib_trades, strategy_annotations)
+    tradable_ib_trades = list(synthetic_base.tradable_trades)
     ib_stock_trades = load_ib_stock_trades(ib_path)
-    ib_trades = build_ib_hedge_trades(raw_ib_trades, ib_stock_trades)
+    ib_trades = build_ib_hedge_trades(tradable_ib_trades, ib_stock_trades)
     qmt3_open_hedges, qmt3_reserved_sell_qty, qmt3_link_warnings = build_qmt3_open_hedges(
         records,
         ib_trades,
@@ -2669,7 +3209,7 @@ def calculate(
             for link in rollover_links
         }
         ib_trades = build_ib_hedge_trades(
-            raw_ib_trades,
+            tradable_ib_trades,
             ib_stock_trades,
             include_unmatched_buys=True,
         )
@@ -2712,6 +3252,7 @@ def calculate(
         ib_allocations,
     )
     warnings: list[str] = []
+    warnings.extend(synthetic_base.warnings)
     warnings.extend(qmt3_link_warnings)
     warnings.extend(allocation_warnings)
     if not qmt_paths.get("QMT2"):
@@ -2745,6 +3286,22 @@ def calculate(
         residual_ib_buy_qty=residual_ib_buy_qty,
         ib_allocations=ib_allocations,
         allocation_warnings=allocation_warnings,
+        raw_ib_trades=tuple(raw_ib_trades),
+        synthetic_base_records=synthetic_base.records,
+        synthetic_base_event_slices=synthetic_base.excluded_slices,
+        synthetic_base_establish_qty=synthetic_base.configured_establish_qty,
+        synthetic_base_unwind_qty=synthetic_base.configured_unwind_qty,
+        synthetic_base_establish_matched_qty=synthetic_base.matched_establish_qty,
+        synthetic_base_unwind_matched_qty=synthetic_base.matched_unwind_qty,
+        synthetic_base_active_qty=synthetic_base.matched_active_qty,
+        synthetic_base_seed_qty=synthetic_base.configured_establish_qty,
+        synthetic_base_seed_matched_qty=synthetic_base.matched_establish_qty,
+        synthetic_base_seed_slices=tuple(
+            item for item in synthetic_base.excluded_slices
+            if item.role == "synthetic_base_establish"
+        ),
+        raw_ib_position_qty=sum(item.qty for item in raw_ib_trades),
+        effective_ib_position_qty=sum(item.qty for item in tradable_ib_trades),
         warnings=tuple(warnings),
     )
 

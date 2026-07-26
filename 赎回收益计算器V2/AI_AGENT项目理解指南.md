@@ -73,16 +73,15 @@ CalculationResult
 | `realtime_premium.py` | XOP TWS 行情、新浪 159518 五档、CFETS 最新小时价、实时篮子估值、共享 JSON、TWS 下单队列 | `calculate_premium_valuation()`、`TwsXopMarketData` |
 | `xop_close_orders.py` | 生成并校验 XOP 收盘前 BUY/MKT/DAY 条件单模板 | `generate_order_specs()`、`build_ib_order()` |
 
-### 4.2 PCF、汇率、行情与校准
+### 4.2 PCF、汇率、行情与预测
 
 | 文件 | 职责 | 关键原则 |
 |---|---|---|
 | `szse_pcf.py` | 深交所/上交所 PCF 列表、详情、XML/TXT 缓存、字段统一、限流与冷却 | 本地缓存优先；两交易所独立串行限流；历史 SSE 不用最新文件冒充 |
-| `fx_rates.py` | SAFE 中间价、CFETS 小时价/收盘价抓取与 CSV 缓存 | PCF 校准用 SAFE；到账与结算预测用 CFETS；USD/CNY 与 HKD/CNY 均可保存 |
+| `fx_rates.py` | SAFE 中间价、CFETS 小时价/收盘价抓取与 CSV 缓存 | 篮子资产预测使用 CFETS；USD/CNY 与 HKD/CNY 均可保存 |
 | `market_data.py` | XOP 日收盘和多个美东收盘窗口价格的 CSV 读写 | 指定窗口缺失时按固定顺序回退 |
 | `backfill_xop_from_tws.py` | TWS 只读回填 XOP 日线、VWAP、15:59/16:00 价格 | `readonly=True`，结果 upsert 到 `xop_prices.csv` |
-| `basket_calibration.py` | PCF 隐含股数、置信度、实际到账反校准及 CSV 存储 | 默认采用 `q_net`；异常样本保留但可标记不纳入 |
-| `settlement_estimator.py` | 指定日期/QMT 篮子到账估算及 996 股总资产预测缓存 | 区分动态校准估算和固定 996 总资产预测 |
+| `settlement_estimator.py` | 996 股固定篮子总资产预测及 CSV 缓存 | XOP 15:59 × CFETS 16:00 + PCF 现金差额 |
 | `backfill_pcf_two_months.py` | 批量补近两个月关注 ETF 的缺失 PCF XML | SZSE/SSE 两队列并行，各自串行；缓存存在即跳过；冷却后可续跑 |
 
 ### 4.3 研究模块
@@ -554,8 +553,6 @@ UI 还要求：默认不勾选、逐行勾选、额外解锁、每单独立确�
 | `ib_mapping_overrides.json` | 人工 IB 映射、人工虚拟平仓、人工退款 | 篮子明细/映射 UI |
 | `market_data/xop_prices.csv` | XOP 日收盘和收盘窗口价格 | TWS 回填 |
 | `fx_data/fx_rates.csv` | SAFE/CFETS 历史汇率 | FX 模块/PCF 页 |
-| `calibration/pcf_calibration_points.csv` | PCF 隐含股数校准点 | 校准页 |
-| `calibration/settlement_observations.csv` | 实际到账反校准样本 | 校准页 |
 | `calibration/predicted_refunds.csv` | 固定 996 的历史篮子资产预测 | 预测重算 |
 | `szse_pcf_cache/YYYY-MM-DD/...` | SZSE/SSE PCF 索引、XML、TXT、请求状态 | PCF 模块 |
 | `共享根/YYYYMMDD/realtime.json` | 实时总资产与盘口溢价 schema 2 | 实时页 |
@@ -594,18 +591,16 @@ UI 还要求：默认不勾选、逐行勾选、额外解锁、每单独立确�
 3. 如需继续开发，先在 V1 测试基线中增加最小回归用例，或临时复制测试到独立开发目录；
 4. 再检查 `redemption_ui.py` 的展示字段是否同步。
 
-### 14.2 改到账预测/估值
+### 14.2 改篮子资产预测/估值
 
 同时检查：
 
-- `basket_calibration.py`
 - `settlement_estimator.py`
 - `market_data.py`
 - `fx_rates.py`
-- `redemption_ui.ArrivalCalibrationTab`
 - `PredictedRefundWorker`
 
-必须明确本次修改针对动态 `q_net`、固定 996，还是历史 990。
+必须区分固定 996 资产估值与历史主账固定 990 股 IB 对冲，两者不能互相改写。
 
 ### 14.3 改实时页或共享 JSON
 

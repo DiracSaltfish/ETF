@@ -6,7 +6,6 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import basket_calibration
 import redemption_engine
 
 
@@ -37,49 +36,6 @@ PREDICTED_REFUND_FIELDS = (
     "model_version",
     "source",
 )
-
-
-@dataclass(frozen=True)
-class RedemptionEstimate:
-    basket_id: str
-    redeem_day: date
-    contract_no: int
-    redeem_qty: int
-    creation_redemption_unit: int
-    unit_ratio: Decimal
-    shares_per_cu: Decimal
-    estimated_xop_shares: Decimal
-    price_window: str
-    xop_price: Decimal
-    settlement_fx: Decimal
-    estimated_refund_cny: Decimal
-    estimated_cash_difference_cny: Decimal
-    estimated_total_cash_cny: Decimal
-    domestic_cost_cny: Decimal
-    estimated_domestic_pnl_cny: Decimal
-    confidence: str
-    warnings: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class DateRedemptionEstimate:
-    redeem_day: date
-    redeem_qty: int
-    creation_redemption_unit: int
-    unit_ratio: Decimal
-    shares_per_cu: Decimal
-    estimated_xop_shares: Decimal
-    price_window: str
-    xop_price: Decimal
-    settlement_fx: Decimal
-    estimated_refund_cny: Decimal
-    estimated_cash_difference_cny: Decimal
-    estimated_total_cash_cny: Decimal
-    actual_refund_cny: Decimal | None = None
-    actual_cash_difference_cny: Decimal | None = None
-    actual_total_cash_cny: Decimal | None = None
-    inferred_shares_per_cu: Decimal | None = None
-    error_vs_calibration: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -205,119 +161,4 @@ def estimate_predicted_refund(
         predicted_cash_difference_cny=redemption_engine.money(predicted_cash_difference),
         predicted_basket_asset_cny=redemption_engine.money(predicted_basket_asset),
         model_version=PREDICTED_BASKET_MODEL_VERSION,
-    )
-
-
-def estimate_redemption_for_date(
-    redeem_day: date,
-    redeem_qty: int,
-    calibration_state: basket_calibration.BasketCalibrationState,
-    pcf_point: basket_calibration.PcfCalibrationPoint,
-    xop_sell_price: Decimal,
-    settlement_fx: Decimal,
-    *,
-    actual_refund_cny: Decimal | None = None,
-    actual_cash_difference_cny: Decimal | None = None,
-    price_window: str = "1540_1600",
-) -> DateRedemptionEstimate:
-    xop_sell_price = Decimal(xop_sell_price)
-    settlement_fx = Decimal(settlement_fx)
-    if redeem_qty <= 0 or pcf_point.creation_redemption_unit <= 0:
-        raise ValueError("赎回份额和最小申赎单位必须大于 0")
-    if xop_sell_price <= 0:
-        raise ValueError("XOP 卖出价格必须大于 0")
-    if settlement_fx <= 0:
-        raise ValueError("CFETS 结算汇率必须大于 0")
-    unit_ratio = Decimal(redeem_qty) / Decimal(pcf_point.creation_redemption_unit)
-    estimated_shares = calibration_state.shares_per_cu * unit_ratio
-    estimated_refund = estimated_shares * xop_sell_price * settlement_fx
-    estimated_cash_difference = pcf_point.estimate_cash_component * unit_ratio
-    estimated_total = estimated_refund + estimated_cash_difference
-
-    actual_refund = Decimal(actual_refund_cny) if actual_refund_cny is not None else None
-    actual_cash_difference = (
-        Decimal(actual_cash_difference_cny) if actual_cash_difference_cny is not None else None
-    )
-    actual_total = None
-    inferred_shares = None
-    error_vs_calibration = None
-    if actual_refund is not None:
-        inferred_shares = actual_refund / settlement_fx / xop_sell_price / unit_ratio
-        error_vs_calibration = inferred_shares - calibration_state.shares_per_cu
-        actual_total = actual_refund + (actual_cash_difference or Decimal("0"))
-
-    return DateRedemptionEstimate(
-        redeem_day=redeem_day,
-        redeem_qty=redeem_qty,
-        creation_redemption_unit=pcf_point.creation_redemption_unit,
-        unit_ratio=unit_ratio,
-        shares_per_cu=calibration_state.shares_per_cu,
-        estimated_xop_shares=estimated_shares,
-        price_window=price_window,
-        xop_price=xop_sell_price,
-        settlement_fx=settlement_fx,
-        estimated_refund_cny=redemption_engine.money(estimated_refund),
-        estimated_cash_difference_cny=redemption_engine.money(estimated_cash_difference),
-        estimated_total_cash_cny=redemption_engine.money(estimated_total),
-        actual_refund_cny=redemption_engine.money(actual_refund) if actual_refund is not None else None,
-        actual_cash_difference_cny=(
-            redemption_engine.money(actual_cash_difference) if actual_cash_difference is not None else None
-        ),
-        actual_total_cash_cny=redemption_engine.money(actual_total) if actual_total is not None else None,
-        inferred_shares_per_cu=inferred_shares,
-        error_vs_calibration=error_vs_calibration,
-    )
-
-
-def estimate_redemption(
-    basket: redemption_engine.BasketResult,
-    calibration_state: basket_calibration.BasketCalibrationState,
-    pcf_point: basket_calibration.PcfCalibrationPoint,
-    xop_sell_price: Decimal,
-    settlement_fx: Decimal,
-    price_window: str = "1540_1600",
-) -> RedemptionEstimate:
-    xop_sell_price = Decimal(xop_sell_price)
-    settlement_fx = Decimal(settlement_fx)
-    if xop_sell_price <= 0:
-        raise ValueError("XOP 卖出价格必须大于 0")
-    if settlement_fx <= 0:
-        raise ValueError("CFETS 结算汇率必须大于 0")
-    if basket.redeem_qty <= 0 or pcf_point.creation_redemption_unit <= 0:
-        raise ValueError("赎回份额和最小申赎单位必须大于 0")
-    unit_ratio = Decimal(basket.redeem_qty) / Decimal(pcf_point.creation_redemption_unit)
-    estimated_xop_shares = calibration_state.shares_per_cu * unit_ratio
-    refund = estimated_xop_shares * xop_sell_price * settlement_fx
-    has_actual_cash_difference = any(item.action == "ETF 现金差额" for item in basket.cash_flows)
-    cash_difference = (
-        basket.cash_difference
-        if has_actual_cash_difference or basket.cash_difference != 0
-        else pcf_point.estimate_cash_component * unit_ratio
-    )
-    total_cash = refund + cash_difference
-    domestic_pnl = total_cash - basket.domestic_cost
-    warnings = [item for item in (calibration_state.warning,) if item]
-    if has_actual_cash_difference or basket.cash_difference != 0:
-        warnings.append("现金差额已使用 QMT 实际值")
-    if basket.refund_amount > 0:
-        warnings.append(f"已有实际补券退款 {redemption_engine.money(basket.refund_amount)} 元，保留估算用于误差分析")
-    return RedemptionEstimate(
-        basket_id=basket.id,
-        redeem_day=basket.redeem_day,
-        contract_no=basket.contract_no,
-        redeem_qty=basket.redeem_qty,
-        creation_redemption_unit=pcf_point.creation_redemption_unit,
-        unit_ratio=unit_ratio,
-        shares_per_cu=calibration_state.shares_per_cu,
-        estimated_xop_shares=estimated_xop_shares,
-        price_window=price_window,
-        xop_price=xop_sell_price,
-        settlement_fx=settlement_fx,
-        estimated_refund_cny=redemption_engine.money(refund),
-        estimated_cash_difference_cny=redemption_engine.money(cash_difference),
-        estimated_total_cash_cny=redemption_engine.money(total_cash),
-        domestic_cost_cny=redemption_engine.money(basket.domestic_cost),
-        estimated_domestic_pnl_cny=redemption_engine.money(domestic_pnl),
-        confidence=calibration_state.confidence,
-        warnings=tuple(warnings),
     )

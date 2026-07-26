@@ -35,11 +35,13 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
     QSpinBox,
     QSplitter,
+    QSizePolicy,
     QStyleFactory,
     QTabWidget,
     QTableWidget,
@@ -50,7 +52,6 @@ from PyQt5.QtWidgets import (
 
 import redemption_engine as engine
 import backfill_xop_from_tws
-import basket_calibration
 import fx_rates
 import market_data
 import realtime_premium
@@ -62,6 +63,7 @@ import xop_close_orders
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 OVERRIDES_PATH = ROOT / "ib_mapping_overrides.json"
+STRATEGY_ANNOTATIONS_PATH = ROOT / "ib_strategy_annotations.json"
 BEIJING = ZoneInfo("Asia/Shanghai")
 
 
@@ -81,10 +83,7 @@ DEFAULT_CONFIG = {
     "szse_pcf_cache_dir": str(ROOT / "szse_pcf_cache"),
     "fx_rates_csv_path": str(ROOT / "fx_data" / "fx_rates.csv"),
     "xop_price_csv_path": str(ROOT / "market_data" / "xop_prices.csv"),
-    "calibration_csv_path": str(ROOT / "calibration" / "pcf_calibration_points.csv"),
-    "settlement_observation_csv_path": str(ROOT / "calibration" / "settlement_observations.csv"),
     "predicted_refund_csv_path": str(ROOT / "calibration" / "predicted_refunds.csv"),
-    "estimate_price_window": "1540_1600",
     "tws_host": "127.0.0.1",
     "tws_port": 7496,
     "tws_client_id": 8888,
@@ -106,8 +105,6 @@ def load_config() -> dict[str, object]:
         "szse_pcf_cache_dir",
         "fx_rates_csv_path",
         "xop_price_csv_path",
-        "calibration_csv_path",
-        "settlement_observation_csv_path",
         "predicted_refund_csv_path",
     ):
         if not str(config.get(key) or "").strip():
@@ -169,25 +166,6 @@ def refund_amount_text(basket: engine.BasketResult) -> str:
     if basket.manual_refund_amount is not None and basket.actual_refund_day is not None:
         return f"{text}（交割单）"
     return text
-
-
-def price_window_text(value: str) -> str:
-    return {
-        "1540_1550": "美东时间15:40–15:50成交量加权平均价",
-        "1540_1600": "美东时间15:40–16:00成交量加权平均价",
-        "1554_1557": "美东时间15:54–15:57成交量加权平均价",
-        "1559_close": "美东时间15:59一分钟收盘价",
-    }.get(value, value)
-
-
-def confidence_text(value: str) -> str:
-    return {"high": "高", "medium": "中", "low": "低"}.get(value, value)
-
-
-def calibration_method_text(value: str) -> str:
-    return {
-        "pcf_net": "采用扣除PCF现金差额后的反推股数",
-    }.get(value, value)
 
 
 def configured_table() -> QTableWidget:
@@ -1076,7 +1054,95 @@ class MappingLaneArea(QWidget):
         self.overlay.raise_()
 
 
+class SyntheticBaseEventDialog(QDialog):
+    def __init__(
+        self,
+        event_type: str,
+        trades: list[engine.IbTrade],
+        available_by_id: dict[str, int],
+        active_qty: int,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.event_type = event_type
+        self.trades = trades
+        self.available_by_id = available_by_id
+        self.active_qty = active_qty
+        action_text = "建立合成底仓" if event_type == "establish" else "消融合成底仓"
+        self.setWindowTitle(action_text)
+        self.resize(940, min(680, 260 + len(trades) * 34))
+
+        guide = QLabel(
+            f"将所选原始IB委托标记为“{action_text}”，对应数量会从篮子、碎单自平和未闭合公共池中排除。"
+            "成交价仅保留用于审计，不计入赎回主账。"
+        )
+        guide.setWordWrap(True)
+        guide.setObjectName("calculationGuide")
+        self.table = configured_table()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels([
+            "IB时间", "方向", "原始数量", "尚可标记", "本次标记", "成交价（审计）", "原始成交ID",
+        ])
+        self.table.setRowCount(len(trades))
+        self.qty_editors: dict[str, QSpinBox] = {}
+        for row, trade in enumerate(trades):
+            available = available_by_id[trade.id]
+            values = [
+                trade.dt.strftime("%Y-%m-%d %H:%M:%S"),
+                trade.side,
+                f"{abs(trade.qty):,}",
+                f"{available:,}",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setToolTip(str(value))
+                self.table.setItem(row, column, item)
+            editor = QSpinBox()
+            editor.setRange(1, available)
+            editor.setValue(available)
+            editor.setAlignment(Qt.AlignRight)
+            self.table.setCellWidget(row, 4, editor)
+            self.qty_editors[trade.id] = editor
+            for column, value in ((5, fmt_decimal(trade.price, 6)), (6, trade.id)):
+                item = QTableWidgetItem(str(value))
+                item.setToolTip(str(value))
+                self.table.setItem(row, column, item)
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("sourceHint")
+        if event_type == "unwind":
+            self.summary_label.setText(f"当前可消融合成底仓：{active_qty:,} 股；本次总数不能超过该数量。")
+        else:
+            self.summary_label.setText(f"当前有效合成底仓：{active_qty:,} 股。")
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("确认并重算")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(guide)
+        layout.addWidget(self.table, 1)
+        layout.addWidget(self.summary_label)
+        layout.addWidget(buttons)
+
+    def quantities(self) -> dict[str, int]:
+        return {trade_id: editor.value() for trade_id, editor in self.qty_editors.items()}
+
+    def accept(self) -> None:
+        total = sum(self.quantities().values())
+        if self.event_type == "unwind":
+            if total > self.active_qty:
+                QMessageBox.warning(self, "超过可用底仓", f"本次消融 {total:,} 股，超过可用合成底仓 {self.active_qty:,} 股。")
+                return
+        super().accept()
+
+
 class BasketMappingTab(QWidget):
+    syntheticEventRequested = pyqtSignal(str, object)
+    syntheticRecordsRequested = pyqtSignal()
+
     BASKET_COLORS = (
         "#DCFCE7", "#DBEAFE", "#FEF3C7", "#FCE7F3",
         "#EDE9FE", "#CFFAFE", "#FFEDD5", "#E0F2FE",
@@ -1085,6 +1151,9 @@ class BasketMappingTab(QWidget):
         "venue": "#F3F4F6",
         "transfer": "#FFEDD5",
         "ib_self": "#FEE2E2",
+        "synthetic_establish": "#E0F2FE",
+        "synthetic_unwind": "#FEF3C7",
+        "raw_only": "#F8FAFC",
         "unallocated": "#FFFFFF",
     }
 
@@ -1107,13 +1176,16 @@ class BasketMappingTab(QWidget):
             editor.setDisplayFormat("yyyy-MM-dd")
         self.apply_button = QPushButton("应用区间")
         self.all_button = QPushButton("显示全部")
-        self.legend = QLabel("篮子同色关联  ·  橙色=跨账户调仓（含QMT3成本承接）  ·  灰色=国内自平  ·  红色=IB自平  ·  白色=未闭合")
+        self.legend = QLabel("篮子同色关联  ·  蓝色=合成底仓建立  ·  黄色=合成底仓消融  ·  红色=IB自平  ·  白色=未闭合")
         self.legend.setObjectName("sourceHint")
 
         self.domestic_table = self._lane_table("国内 159518｜日期  Seq  账户  方向  数量  价格")
         self.basket_table = self._lane_table("赎回篮子")
         self.basket_table.setWordWrap(True)
         self.ib_table = self._lane_table("IB XOP｜日期时间  方向  数量  价格")
+        self.ib_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.ib_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ib_table.customContextMenuRequested.connect(self.show_ib_context_menu)
         self.lane_area = MappingLaneArea(self)
 
         controls = QHBoxLayout()
@@ -1164,7 +1236,7 @@ class BasketMappingTab(QWidget):
         self.basket_by_id = {item.id: item for item in result.baskets}
         days = [item.trade_day for item in result.qmt_records]
         days.extend(item.redeem_day for item in result.baskets)
-        days.extend(item.dt.date() for item in result.ib_trades)
+        days.extend(item.dt.date() for item in (result.raw_ib_trades or result.ib_trades))
         if days:
             minimum, maximum = min(days), max(days)
             for editor in (self.start_date, self.end_date):
@@ -1181,7 +1253,7 @@ class BasketMappingTab(QWidget):
             return
         days = [item.trade_day for item in self.result.qmt_records]
         days.extend(item.redeem_day for item in self.result.baskets)
-        days.extend(item.dt.date() for item in self.result.ib_trades)
+        days.extend(item.dt.date() for item in (self.result.raw_ib_trades or self.result.ib_trades))
         if days:
             self.start_date.setDate(self._qdate(min(days)))
             self.end_date.setDate(self._qdate(max(days)))
@@ -1295,6 +1367,8 @@ class BasketMappingTab(QWidget):
                         "sort": (item.dt, order),
                         "text": f"{item.dt:%m-%d %H:%M:%S}  {item.side:<4}  {item.qty:,}  @{item.price:.4f}  {item.role or '--'}  → 篮子{basket.sequence}",
                         "kind": "basket", "group": basket.id,
+                        "raw_trade_id": engine.source_ib_trade_id(item.trade_id),
+                        "side": item.side,
                     })
 
         for pair in self.result.ib_self_closes:
@@ -1307,6 +1381,8 @@ class BasketMappingTab(QWidget):
                         "sort": (current.dt, order),
                         "text": f"{current.dt:%m-%d %H:%M:%S}  {current.side:<4}  {current.qty:,}  @{current.price:.4f}  [{label}{role}]",
                         "kind": "ib_self", "group": group,
+                        "raw_trade_id": engine.source_ib_trade_id(current.trade_id),
+                        "side": current.side,
                     })
         for item in self.result.unmatched_ib:
             if start <= item.dt.date() <= end:
@@ -1315,7 +1391,49 @@ class BasketMappingTab(QWidget):
                     "sort": (item.dt, order),
                     "text": f"{item.dt:%m-%d %H:%M:%S}  {item.side:<4}  {item.qty:,}  @{item.price:.4f}  [未闭合]",
                     "kind": "unallocated", "group": "",
+                    "raw_trade_id": engine.source_ib_trade_id(item.trade_id),
+                    "side": item.side,
                 })
+        for record in self.result.synthetic_base_records:
+            if record.matched_qty <= 0 or record.trade_dt is None:
+                continue
+            if not start <= record.trade_dt.date() <= end:
+                continue
+            order += 1
+            is_establish = record.event_type == "establish"
+            label = "合成底仓建立" if is_establish else "合成底仓消融"
+            rows.append({
+                "sort": (record.trade_dt, order),
+                "text": (
+                    f"{record.trade_dt:%m-%d %H:%M:%S}  {record.side:<4}  "
+                    f"{record.matched_qty:,}  @{record.price:.4f}  [{label}｜主账排除]"
+                ),
+                "kind": "synthetic_establish" if is_establish else "synthetic_unwind",
+                "group": "",
+                "raw_trade_id": record.trade_id,
+                "side": record.side,
+                "synthetic_event_id": record.event_id,
+            })
+        represented = {
+            str(row.get("raw_trade_id") or "")
+            for row in rows
+            if row.get("raw_trade_id")
+        }
+        for trade in self.result.raw_ib_trades:
+            if trade.id in represented or not start <= trade.dt.date() <= end:
+                continue
+            order += 1
+            rows.append({
+                "sort": (trade.dt, order),
+                "text": (
+                    f"{trade.dt:%m-%d %H:%M:%S}  {trade.side:<4}  {abs(trade.qty):,}  "
+                    f"@{trade.price:.4f}  [原始委托｜业务占用未展开]"
+                ),
+                "kind": "raw_only",
+                "group": "",
+                "raw_trade_id": trade.id,
+                "side": trade.side,
+            })
         return sorted(rows, key=lambda item: item["sort"])
 
     def _fill_lane(self, table: QTableWidget, rows: list[dict[str, object]], lane: str) -> None:
@@ -1340,8 +1458,56 @@ class BasketMappingTab(QWidget):
                 target[special_group].append(row_index)
             item.setBackground(QColor(color))
             item.setToolTip(str(row["text"]))
+            if lane == "ib" and row.get("raw_trade_id"):
+                item.setData(Qt.UserRole, {
+                    "raw_trade_id": str(row["raw_trade_id"]),
+                    "side": str(row.get("side") or ""),
+                    "synthetic_event_id": str(row.get("synthetic_event_id") or ""),
+                })
             table.setItem(row_index, 0, item)
             table.setRowHeight(row_index, 29)
+
+    def selected_ib_trade_ids(self) -> list[str]:
+        selected: list[str] = []
+        seen: set[str] = set()
+        for index in self.ib_table.selectionModel().selectedRows():
+            item = self.ib_table.item(index.row(), 0)
+            payload = item.data(Qt.UserRole) if item is not None else None
+            trade_id = str(payload.get("raw_trade_id") or "") if isinstance(payload, dict) else ""
+            if trade_id and trade_id not in seen:
+                selected.append(trade_id)
+                seen.add(trade_id)
+        return selected
+
+    def show_ib_context_menu(self, point: QPoint) -> None:
+        row = self.ib_table.rowAt(point.y())
+        if row >= 0:
+            clicked = self.ib_table.item(row, 0)
+            if clicked is not None and not clicked.isSelected():
+                self.ib_table.clearSelection()
+                self.ib_table.selectRow(row)
+        trade_ids = self.selected_ib_trade_ids()
+        selected_sides: set[str] = set()
+        for index in self.ib_table.selectionModel().selectedRows():
+            item = self.ib_table.item(index.row(), 0)
+            payload = item.data(Qt.UserRole) if item is not None else None
+            if isinstance(payload, dict) and payload.get("side"):
+                selected_sides.add(str(payload["side"]))
+
+        menu = QMenu(self)
+        establish_action = menu.addAction("加入合成底仓（建立）")
+        unwind_action = menu.addAction("加入合成底仓（消融）")
+        menu.addSeparator()
+        records_action = menu.addAction("查看合成底仓记录")
+        establish_action.setEnabled(bool(trade_ids) and selected_sides == {"BUY"})
+        unwind_action.setEnabled(bool(trade_ids) and selected_sides == {"SELL"})
+        chosen = menu.exec_(self.ib_table.viewport().mapToGlobal(point))
+        if chosen is establish_action:
+            self.syntheticEventRequested.emit("establish", trade_ids)
+        elif chosen is unwind_action:
+            self.syntheticEventRequested.emit("unwind", trade_ids)
+        elif chosen is records_action:
+            self.syntheticRecordsRequested.emit()
 
     def populate(self) -> None:
         if self.result is None:
@@ -1390,6 +1556,118 @@ class BasketMappingTab(QWidget):
         QTimer.singleShot(0, self.lane_area.overlay.update)
 
 
+class SyntheticBaseTab(QWidget):
+    removeRequested = pyqtSignal(object)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.result: engine.CalculationResult | None = None
+        guide = QLabel(
+            "这里只记录人工确认的合成底仓XOP腿。建立BUY与消融SELL均从赎回主账排除；"
+            "价格只用于身份校验和审计。移除记录后，对应数量会释放回公共池并完整重算。"
+        )
+        guide.setWordWrap(True)
+        guide.setObjectName("calculationGuide")
+
+        self.metric_values: dict[str, QLabel] = {}
+        metric_layout = QHBoxLayout()
+        for key in ("累计建立", "累计消融", "有效合成底仓", "记录状态"):
+            field = QWidget()
+            field.setObjectName("summaryField")
+            field_layout = QVBoxLayout(field)
+            field_layout.setContentsMargins(10, 6, 10, 6)
+            title = QLabel(key)
+            title.setObjectName("summaryKey")
+            value = QLabel("--")
+            value.setObjectName("summaryValue")
+            field_layout.addWidget(title)
+            field_layout.addWidget(value)
+            metric_layout.addWidget(field, 1)
+            self.metric_values[key] = value
+
+        self.table = configured_table()
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.remove_button = QPushButton("移除选中并释放回公共池")
+        self.remove_button.clicked.connect(self.remove_selected)
+        controls = QHBoxLayout()
+        controls.addWidget(self.remove_button)
+        controls.addStretch(1)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(guide)
+        layout.addLayout(metric_layout)
+        layout.addLayout(controls)
+        layout.addWidget(self.table, 1)
+
+    def update_data(self, result: engine.CalculationResult) -> None:
+        self.result = result
+        self.metric_values["累计建立"].setText(
+            f"{result.synthetic_base_establish_matched_qty:,} / 配置 {result.synthetic_base_establish_qty:,} 股"
+        )
+        self.metric_values["累计消融"].setText(
+            f"{result.synthetic_base_unwind_matched_qty:,} / 配置 {result.synthetic_base_unwind_qty:,} 股"
+        )
+        self.metric_values["有效合成底仓"].setText(f"{result.synthetic_base_active_qty:,} 股")
+        failed = sum(item.status != "已排除" for item in result.synthetic_base_records)
+        self.metric_values["记录状态"].setText(
+            f"{len(result.synthetic_base_records) - failed} 正常 / {failed} 异常"
+        )
+
+        headers = [
+            "状态", "类型", "底仓组", "IB时间", "方向", "配置数量", "已排除",
+            "成交价（审计）", "原始数量", "原始成交ID", "事件ID", "备注",
+        ]
+        rows: list[list[object]] = []
+        payloads: list[str] = []
+        for record in result.synthetic_base_records:
+            rows.append([
+                record.status,
+                "建立" if record.event_type == "establish" else "消融",
+                record.position_id,
+                record.trade_dt.strftime("%Y-%m-%d %H:%M:%S") if record.trade_dt else "--",
+                record.side,
+                f"{record.configured_qty:,}",
+                f"{record.matched_qty:,}",
+                fmt_decimal(record.price, 6),
+                f"{record.original_qty:,}",
+                record.trade_id,
+                record.event_id,
+                record.note or "--",
+            ])
+            payloads.append(record.event_id)
+        fill_table(self.table, headers, rows, payloads=payloads)
+        for row, record in enumerate(result.synthetic_base_records):
+            if record.status != "已排除":
+                background, foreground = "#fef2f2", "#991b1b"
+            elif record.event_type == "establish":
+                background, foreground = "#eff6ff", "#1e3a8a"
+            else:
+                background, foreground = "#fffbeb", "#92400e"
+            for column in range(self.table.columnCount()):
+                item = self.table.item(row, column)
+                if item is not None:
+                    item.setBackground(QColor(background))
+                    item.setForeground(QColor(foreground))
+        self.remove_button.setEnabled(bool(rows))
+
+    def selected_event_ids(self) -> list[str]:
+        result: list[str] = []
+        for index in self.table.selectionModel().selectedRows():
+            item = self.table.item(index.row(), 0)
+            event_id = item.data(Qt.UserRole) if item is not None else None
+            if event_id:
+                result.append(str(event_id))
+        return result
+
+    def remove_selected(self) -> None:
+        event_ids = self.selected_event_ids()
+        if not event_ids:
+            QMessageBox.information(self, "未选择记录", "请先选择要移除的一条或多条合成底仓记录。")
+            return
+        self.removeRequested.emit(event_ids)
+
+
 class IbSelfCloseTab(QWidget):
     """Domestic venue sale plus its foreign hedge, with residual IB as diagnostics."""
 
@@ -1421,17 +1699,22 @@ class IbSelfCloseTab(QWidget):
         )
         guide.setObjectName("calculationGuide")
         guide.setWordWrap(True)
+        guide.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
-        metrics = QHBoxLayout()
+        metrics = QGridLayout()
         metrics.setSpacing(8)
-        for key, title, tone in (
+        metric_specs = (
             ("completed", "已完整闭合", "normal"),
             ("domestic", "国内盈亏 RMB", "positive"),
             ("ib", "IB盈亏 USD / RMB", "positive"),
             ("total", "策略自平合计 RMB", "positive"),
             ("incomplete", "未完整 / 未归因", "accent"),
-        ):
-            metrics.addWidget(self._metric_card(key, title, tone), 1)
+        )
+        for index, (key, title, tone) in enumerate(metric_specs):
+            row, column = divmod(index, 3)
+            metrics.addWidget(self._metric_card(key, title, tone), row, column)
+        for column in range(3):
+            metrics.setColumnStretch(column, 1)
 
         self.strategy_table = configured_table()
         self.strategy_table.setAlternatingRowColors(False)
@@ -1494,12 +1777,18 @@ class IbSelfCloseTab(QWidget):
     def _metric_card(self, key: str, title: str, tone: str) -> QWidget:
         field = QWidget()
         field.setObjectName({"positive": "summaryFieldPositive", "accent": "summaryFieldAccent"}.get(tone, "summaryField"))
+        field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout = QVBoxLayout(field)
         layout.setContentsMargins(10, 7, 10, 7)
         label = QLabel(title)
         label.setObjectName("summaryKeyAccent" if tone == "accent" else "summaryKey")
+        label.setMinimumWidth(0)
+        label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         value = QLabel("--")
         value.setObjectName({"positive": "summaryValuePositive", "accent": "summaryValueAccent"}.get(tone, "summaryValue"))
+        value.setMinimumWidth(0)
+        value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        value.setWordWrap(True)
         layout.addWidget(label)
         layout.addWidget(value)
         self.metric_fields[key] = field
@@ -2433,634 +2722,6 @@ class SzsePcfTab(QWidget):
         self.raw_text.setPlainText(detail.raw_text or "当前条目暂无原始 TXT 内容。")
 
 
-class ArrivalCalibrationTab(QWidget):
-    calibrationChanged = pyqtSignal()
-
-    def __init__(self, config: dict[str, object], pcf_tab: SzsePcfTab, parent=None) -> None:
-        super().__init__(parent)
-        self.pcf_tab = pcf_tab
-        self.result: engine.CalculationResult | None = None
-        self.fx_store = fx_rates.FxRateStore(Path(str(config["fx_rates_csv_path"])))
-        self.price_provider = market_data.CsvXopPriceProvider(Path(str(config["xop_price_csv_path"])))
-        self.calibration_store = basket_calibration.CalibrationStore(Path(str(config["calibration_csv_path"])))
-        self.observation_store = basket_calibration.SettlementObservationStore(
-            Path(str(config["settlement_observation_csv_path"]))
-        )
-        self.price_window = str(config.get("estimate_price_window") or "1540_1600")
-        self.tws_host = str(config.get("tws_host") or "127.0.0.1")
-        self.tws_port = int(config.get("tws_port") or 7496)
-        self.tws_client_id = int(config.get("tws_client_id") or 8888)
-        self._date_initialized = False
-        self.status_label = QLabel(
-            "请在上方四个功能页中选择一项任务；每页只处理一类计算。"
-        )
-        self.status_label.setObjectName("sourceHint")
-        self.status_label.setWordWrap(True)
-        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        initial_day = normalize_business_day(date.today(), prefer_backward=True)
-
-        def date_edit() -> QDateEdit:
-            widget = QDateEdit()
-            widget.setCalendarPopup(True)
-            widget.setDisplayFormat("yyyy-MM-dd")
-            widget.setDate(QDate(initial_day.year, initial_day.month, initial_day.day))
-            return widget
-
-        def quantity_spin() -> QSpinBox:
-            widget = QSpinBox()
-            widget.setRange(1, 2_000_000_000)
-            widget.setSingleStep(1_000_000)
-            widget.setValue(1_000_000)
-            widget.setSuffix(" 份")
-            return widget
-
-        def guide(text: str) -> QLabel:
-            widget = QLabel(text)
-            widget.setObjectName("calculationGuide")
-            widget.setWordWrap(True)
-            widget.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            return widget
-
-        # Page 1: estimate any date without requiring a QMT redemption record.
-        self.query_date = date_edit()
-        self.query_qty = quantity_spin()
-        self.manual_shares_check = QCheckBox("手动指定每申赎单位XOP股数")
-        self.manual_shares_spin = QDoubleSpinBox()
-        self.manual_shares_spin.setDecimals(4)
-        self.manual_shares_spin.setRange(1.0, 5000.0)
-        self.manual_shares_spin.setSingleStep(1.0)
-        self.manual_shares_spin.setValue(998.0)
-        self.manual_shares_spin.setSuffix(" 股")
-        self.manual_shares_spin.setEnabled(False)
-        self.calculate_date_button = QPushButton("计算指定日期的预估到账金额")
-        date_controls = QHBoxLayout()
-        date_controls.addWidget(QLabel("国内发起赎回的交易日"))
-        date_controls.addWidget(self.query_date)
-        date_controls.addWidget(QLabel("假设赎回份额"))
-        date_controls.addWidget(self.query_qty)
-        date_controls.addWidget(self.manual_shares_check)
-        date_controls.addWidget(self.manual_shares_spin)
-        date_controls.addWidget(self.calculate_date_button)
-        date_controls.addStretch(1)
-        self.date_estimate_table = configured_table()
-        date_page = QWidget()
-        date_layout = QVBoxLayout(date_page)
-        date_layout.addWidget(guide(
-            "用途：在没有 QMT 赎回记录时，预估指定交易日和份额的到账金额。\n"
-            "使用：选择国内赎回交易日，输入假设赎回份额，然后点击计算。"
-            "默认采用PCF扣除现金差额后反推的XOP股数；勾选“手动指定”后，可仅对本次预估覆盖该股数，不会改写PCF校准记录。\n"
-            "计算：预估XOP股数=采用的每申赎单位XOP股数×赎回份额÷最小申赎单位；"
-            "预估补券退款=预估XOP股数×XOP卖出价格×赎回日CFETS美元人民币收盘价；"
-            "预估总回款=预估补券退款+PCF预估现金差额。"
-        ))
-        date_layout.addLayout(date_controls)
-        date_layout.addWidget(self.date_estimate_table, 1)
-
-        # Page 2: estimates for baskets already present in QMT.
-        self.refresh_button = QPushButton("刷新当前QMT篮子预估")
-        self.estimate_table = configured_table()
-        qmt_page = QWidget()
-        qmt_layout = QVBoxLayout(qmt_page)
-        qmt_layout.addWidget(guide(
-            "用途：查看当前 QMT 交割单中每个已发起赎回篮子的预估和实际结果。\n"
-            "计算：与“指定日期到账预估”相同；如 QMT 已出现实际现金差额，现金差额优先使用 QMT 实际值；"
-            "如已出现实际补券退款，同时显示实际值和预估值以便比较。"
-        ))
-        qmt_controls = QHBoxLayout()
-        qmt_controls.addWidget(self.refresh_button)
-        qmt_controls.addStretch(1)
-        qmt_layout.addLayout(qmt_controls)
-        qmt_layout.addWidget(self.estimate_table, 1)
-
-        # Page 3: build and persist PCF calibration points.
-        self.calibration_date = date_edit()
-        self.save_date_point_button = QPushButton("计算并保存该日PCF股数校准")
-        self.write_pcf_button = QPushButton("保存“申购赎回清单”页当前日期")
-        self.pcf_preview_table = configured_table()
-        self.pcf_table = configured_table()
-        pcf_page = QWidget()
-        pcf_layout = QVBoxLayout(pcf_page)
-        pcf_layout.addWidget(guide(
-            "用途：根据当日 PCF 反推每一个最小申赎单位等效的 XOP 股数，并保存给到账预估和实际到账反校准使用。\n"
-            "按资产净值反推股数 = 最小申赎单位资产净值 ÷ PCF估值日SAFE中间价 ÷ XOP估值日收盘价。\n"
-            "扣除现金差额后反推股数 = (最小申赎单位资产净值 - PCF现金差额) ÷ SAFE中间价 ÷ XOP收盘价。\n"
-            "程序默认采用“扣除现金差额后反推股数”；该数值不会代入篮子汇总、篮子配对或 IB 盈亏归因，主账务计算始终固定为每申赎单位 990 股。"
-        ))
-        pcf_controls = QHBoxLayout()
-        pcf_controls.addWidget(QLabel("PCF交易日"))
-        pcf_controls.addWidget(self.calibration_date)
-        pcf_controls.addWidget(self.save_date_point_button)
-        pcf_controls.addWidget(self.write_pcf_button)
-        pcf_controls.addStretch(1)
-        pcf_layout.addLayout(pcf_controls)
-        pcf_splitter = QSplitter(Qt.Vertical)
-        preview_box = QGroupBox("本次校准计算明细")
-        preview_layout = QVBoxLayout(preview_box)
-        preview_layout.addWidget(self.pcf_preview_table)
-        stored_box = QGroupBox("已保存的PCF股数校准点")
-        stored_layout = QVBoxLayout(stored_box)
-        stored_layout.addWidget(self.pcf_table)
-        pcf_splitter.addWidget(preview_box)
-        pcf_splitter.addWidget(stored_box)
-        pcf_layout.addWidget(pcf_splitter, 1)
-
-        # Page 4: validate another redemption's actual receipts and QMT history.
-        self.actual_query_date = date_edit()
-        self.actual_query_qty = quantity_spin()
-        self.external_refund = QDoubleSpinBox()
-        self.external_refund.setDecimals(2)
-        self.external_refund.setRange(0, 10_000_000_000)
-        self.external_refund.setSuffix(" 元")
-        self.external_cash_difference = QDoubleSpinBox()
-        self.external_cash_difference.setDecimals(2)
-        self.external_cash_difference.setRange(-10_000_000_000, 10_000_000_000)
-        self.external_cash_difference.setSuffix(" 元")
-        self.calculate_external_button = QPushButton("用外部实际到账数据反推XOP股数")
-        self.write_observations_button = QPushButton("从当前QMT写入已到账历史反校准")
-        self.actual_validation_table = configured_table()
-        self.observation_table = configured_table()
-        actual_page = QWidget()
-        actual_layout = QVBoxLayout(actual_page)
-        actual_layout.addWidget(guide(
-            "用途：把别人或本账户的实际补券退款与本程序的 PCF 校准股数进行对照。\n"
-            "使用：输入赎回交易日、赎回份额、交割单中的“ETF申购退款”和“ETF现金差额”。补券退款不能填两项之和。\n"
-            "反推每申赎单位XOP股数 = 实际ETF申购退款 ÷ 赎回日CFETS收盘价 ÷ XOP卖出价格代理 ÷ (赎回份额÷最小申赎单位)。\n"
-            "反推误差 = 外部实际到账反推股数 - PCF扣除现金差额后反推股数。"
-        ))
-        actual_controls = QGridLayout()
-        actual_controls.addWidget(QLabel("赎回交易日"), 0, 0)
-        actual_controls.addWidget(self.actual_query_date, 0, 1)
-        actual_controls.addWidget(QLabel("实际赎回份额"), 0, 2)
-        actual_controls.addWidget(self.actual_query_qty, 0, 3)
-        actual_controls.addWidget(QLabel("交割单中的ETF申购退款"), 1, 0)
-        actual_controls.addWidget(self.external_refund, 1, 1)
-        actual_controls.addWidget(QLabel("交割单中的ETF现金差额"), 1, 2)
-        actual_controls.addWidget(self.external_cash_difference, 1, 3)
-        actual_controls.addWidget(self.calculate_external_button, 0, 4, 2, 1)
-        actual_controls.addWidget(self.write_observations_button, 0, 5, 2, 1)
-        actual_layout.addLayout(actual_controls)
-        actual_splitter = QSplitter(Qt.Vertical)
-        validation_box = QGroupBox("单笔外部到账反推明细")
-        validation_layout = QVBoxLayout(validation_box)
-        validation_layout.addWidget(self.actual_validation_table)
-        history_box = QGroupBox("已保存的历史到账反校准")
-        history_layout = QVBoxLayout(history_box)
-        history_layout.addWidget(self.observation_table)
-        actual_splitter.addWidget(validation_box)
-        actual_splitter.addWidget(history_box)
-        actual_layout.addWidget(actual_splitter, 1)
-
-        self.functional_tabs = QTabWidget()
-        self.functional_tabs.addTab(date_page, "指定日期到账预估")
-        self.functional_tabs.addTab(qmt_page, "当前QMT篮子预估")
-        self.functional_tabs.addTab(pcf_page, "PCF隐含XOP股数校准")
-        self.functional_tabs.addTab(actual_page, "实际到账反校准")
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.addWidget(self.functional_tabs, 1)
-        layout.addWidget(self.status_label)
-
-        self.refresh_button.clicked.connect(self.refresh_data)
-        self.write_pcf_button.clicked.connect(self.write_pcf_point)
-        self.write_observations_button.clicked.connect(self.write_observations)
-        self.calculate_date_button.clicked.connect(lambda: self.calculate_selected_date(save_point=False))
-        self.manual_shares_check.toggled.connect(self.manual_shares_spin.setEnabled)
-        self.save_date_point_button.clicked.connect(self.save_calibration_date)
-        self.calculate_external_button.clicked.connect(self.calculate_external_validation)
-        fill_table(self.date_estimate_table, ["状态/提示"], [["选择日期和份额后，点击“计算指定日期的预估到账金额”。"]])
-        fill_table(self.pcf_preview_table, ["状态/提示"], [["选择PCF交易日后，点击“计算并保存”。"]])
-        fill_table(self.actual_validation_table, ["状态/提示"], [["输入外部实际到账数据后点击反推。"]])
-        self.refresh_data()
-
-    @staticmethod
-    def _metadata_day(value: str) -> date:
-        text = str(value or "").strip()
-        if len(text) == 8 and text.isdigit():
-            return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
-        return date.fromisoformat(text)
-
-    def update_data(self, result: engine.CalculationResult) -> None:
-        self.result = result
-        if not self._date_initialized:
-            suggested = normalize_business_day(result.qmt_latest_day or date.today(), prefer_backward=True)
-            value = QDate(suggested.year, suggested.month, suggested.day)
-            self.query_date.setDate(value)
-            self.calibration_date.setDate(value)
-            self.actual_query_date.setDate(value)
-            self._date_initialized = True
-        self.refresh_data()
-
-    def selected_query_day(self) -> date:
-        value = self.query_date.date()
-        return date(value.year(), value.month(), value.day())
-
-    @staticmethod
-    def date_edit_value(widget: QDateEdit) -> date:
-        value = widget.date()
-        return date(value.year(), value.month(), value.day())
-
-    def ensure_xop_close(self, trade_day: date) -> None:
-        try:
-            self.price_provider.get_close(trade_day)
-            return
-        except KeyError:
-            pass
-        prices = backfill_xop_from_tws.fetch_prices(
-            trade_day,
-            trade_day,
-            host=self.tws_host,
-            port=self.tws_port,
-            client_id=self.tws_client_id,
-            intraday_days=set(),
-        )
-        market_data.upsert_xop_prices(self.price_provider.csv_path, prices)
-
-    def ensure_xop_data(self, valuation_day: date, redeem_day: date) -> None:
-        missing = False
-        try:
-            self.price_provider.get_close(valuation_day)
-            self.price_provider.get_window_price(redeem_day, self.price_window)
-        except KeyError:
-            missing = True
-        if not missing:
-            return
-        prices = backfill_xop_from_tws.fetch_prices(
-            min(valuation_day, redeem_day),
-            max(valuation_day, redeem_day),
-            host=self.tws_host,
-            port=self.tws_port,
-            client_id=self.tws_client_id,
-            intraday_days={redeem_day},
-        )
-        market_data.upsert_xop_prices(self.price_provider.csv_path, prices)
-
-    def point_for_query_day(self, trade_day: date) -> basket_calibration.PcfCalibrationPoint:
-        stored = self.calibration_store.point_for_day(trade_day)
-        if stored is not None:
-            return stored
-        detail = self.pcf_tab.store.ensure_target_detail(trade_day)
-        valuation_day = self._metadata_day(detail.metadata.get("PreTradingDay") or "")
-        safe_mid = self.fx_store.get_usd_cny_safe_mid(valuation_day)
-        if safe_mid is None:
-            self.fx_store.ensure_trade_date(valuation_day)
-            safe_mid = self.fx_store.get_usd_cny_safe_mid(valuation_day)
-        if safe_mid is None:
-            raise ValueError(f"缺少 {valuation_day:%Y-%m-%d} SAFE 中间价")
-        self.ensure_xop_close(valuation_day)
-        return basket_calibration.build_pcf_calibration_point(
-            detail,
-            safe_mid,
-            self.price_provider.get_close(valuation_day),
-        )
-
-    def estimate_for_date(
-        self,
-        trade_day: date,
-        redeem_qty: int,
-        *,
-        actual_refund: Decimal | None = None,
-        actual_cash_difference: Decimal | None = None,
-        manual_shares_per_cu: Decimal | None = None,
-    ) -> tuple[
-        basket_calibration.PcfCalibrationPoint,
-        basket_calibration.BasketCalibrationState,
-        settlement_estimator.DateRedemptionEstimate,
-    ]:
-        point = self.point_for_query_day(trade_day)
-        self.ensure_xop_data(point.valuation_day, trade_day)
-        settlement_fx = self.fx_store.get_usd_cny_cfets_close(trade_day)
-        if settlement_fx is None:
-            self.fx_store.ensure_trade_date(trade_day)
-            settlement_fx = self.fx_store.get_usd_cny_cfets_close(trade_day)
-        if settlement_fx is None:
-            raise ValueError(f"缺少 {trade_day:%Y-%m-%d} CFETS 美元人民币收盘价")
-        shares_per_cu = manual_shares_per_cu if manual_shares_per_cu is not None else point.chosen_q
-        if shares_per_cu <= 0:
-            raise ValueError("手动指定的每申赎单位XOP股数必须大于 0")
-        state = basket_calibration.BasketCalibrationState(
-            trade_day=trade_day,
-            shares_per_cu=shares_per_cu,
-            method="manual_override" if manual_shares_per_cu is not None else point.chosen_method,
-            confidence="manual" if manual_shares_per_cu is not None else basket_calibration.calibration_confidence(point),
-            sample_count=1,
-            warning=point.warning,
-        )
-        estimate = settlement_estimator.estimate_redemption_for_date(
-            trade_day,
-            redeem_qty,
-            state,
-            point,
-            self.price_provider.get_window_price(trade_day, self.price_window),
-            settlement_fx,
-            actual_refund_cny=actual_refund,
-            actual_cash_difference_cny=actual_cash_difference,
-            price_window=self.price_window,
-        )
-        return point, state, estimate
-
-    def calculate_selected_date(self, *, save_point: bool = False) -> None:
-        trade_day = self.selected_query_day()
-        try:
-            manual_shares = (
-                Decimal(str(self.manual_shares_spin.value())) if self.manual_shares_check.isChecked() else None
-            )
-            point, state, estimate = self.estimate_for_date(
-                trade_day,
-                self.query_qty.value(),
-                manual_shares_per_cu=manual_shares,
-            )
-        except Exception as exc:
-            self.status_label.setText(f"{trade_day:%Y-%m-%d} 到账预估失败：{exc}")
-            QMessageBox.critical(self, "指定日期到账预估失败", str(exc))
-            return
-        rows = [
-            ["国内发起赎回的交易日", trade_day.isoformat(), "用户选择的 T 日"],
-            ["假设赎回份额", f"{estimate.redeem_qty:,} 份", "不要求 QMT 中存在该笔赎回"],
-            ["PCF最小申赎单位", f"{estimate.creation_redemption_unit:,} 份", "来自 PCF CreationRedemptionUnit"],
-            ["PCF资产估值日", point.valuation_day.isoformat(), "来自 PCF PreTradingDay"],
-            ["PCF最小申赎单位资产净值", fmt_money(point.nav_per_cu), "来自 PCF NAVperCU"],
-            ["PCF现金差额", fmt_money(point.cash_component), "来自 PCF CashComponent"],
-            ["PCF估值日SAFE美元人民币中间价", fmt_decimal(point.safe_mid_fx, 6), "只用于反推PCF隐含股数"],
-            ["XOP在PCF估值日的收盘价", fmt_decimal(point.xop_close, 4), "只用于反推PCF隐含股数"],
-            ["PCF按资产净值反推的每申赎单位XOP股数", fmt_decimal(point.q_nav, 4), "资产净值 ÷ SAFE中间价 ÷ XOP收盘价"],
-            ["PCF扣除现金差额后反推的每申赎单位XOP股数", fmt_decimal(point.q_net, 4), "(资产净值-现金差额) ÷ SAFE中间价 ÷ XOP收盘价"],
-            [
-                "本次到账预估采用的每申赎单位XOP股数",
-                fmt_decimal(state.shares_per_cu, 4),
-                "用户手动指定；仅影响本次预估，不修改PCF校准记录"
-                if manual_shares is not None
-                else "默认采用PCF扣除现金差额后的反推股数",
-            ],
-            ["本次赎回预估对应的XOP股数", fmt_decimal(estimate.estimated_xop_shares, 4), "采用股数 × 赎回份额 ÷ 最小申赎单位"],
-            ["XOP预估卖出价格", fmt_decimal(estimate.xop_price, 4), price_window_text(estimate.price_window)],
-            ["赎回日CFETS美元人民币收盘价", fmt_decimal(estimate.settlement_fx, 6), "用于把XOP卖出所得美元折算为人民币"],
-            ["预估ETF申购退款（补券退款）", fmt_money(estimate.estimated_refund_cny), "预估XOP股数 × XOP卖出价 × CFETS收盘价"],
-            ["预估ETF现金差额", fmt_money(estimate.estimated_cash_difference_cny), "PCF EstimateCashComponent × 赎回份额比例"],
-            ["预估国内总回款", fmt_money(estimate.estimated_total_cash_cny), "预估ETF申购退款 + 预估ETF现金差额"],
-            [
-                "校准置信度与提示",
-                "手动指定（不进行PCF置信度评级）"
-                if manual_shares is not None
-                else confidence_text(state.confidence) + (f"；{point.warning}" if point.warning else ""),
-                "手动指定模式只计算金额；自动模式中，高=股数在990–1000且无警告，中=在980–1010但有警告",
-            ],
-        ]
-        fill_explanation_table(self.date_estimate_table, ["计算项目", "计算结果", "数据来源或计算方法"], rows)
-        self.status_label.setText(
-            f"已计算 {trade_day:%Y-%m-%d}"
-            + (f"（手动指定每申赎单位 {manual_shares:.4f} 股XOP）" if manual_shares is not None else "")
-            + f"：预估ETF申购退款 {estimate.estimated_refund_cny:,.2f} 元，"
-            f"预估总回款 {estimate.estimated_total_cash_cny:,.2f} 元"
-        )
-
-    def save_calibration_date(self) -> None:
-        trade_day = self.date_edit_value(self.calibration_date)
-        try:
-            point = self.point_for_query_day(trade_day)
-            self.calibration_store.append_or_replace_pcf_point(point)
-        except Exception as exc:
-            QMessageBox.critical(self, "PCF股数校准失败", str(exc))
-            return
-        rows = [
-            ["PCF交易日", point.pcf_trading_day.isoformat(), "来自 PCF TradingDay"],
-            ["PCF资产估值日", point.valuation_day.isoformat(), "来自 PCF PreTradingDay"],
-            ["PCF最小申赎单位", f"{point.creation_redemption_unit:,} 份", "来自 CreationRedemptionUnit"],
-            ["PCF最小申赎单位资产净值", fmt_money(point.nav_per_cu), "来自 NAVperCU"],
-            ["PCF现金差额", fmt_money(point.cash_component), "来自 CashComponent"],
-            ["SAFE美元人民币中间价", fmt_decimal(point.safe_mid_fx, 6), f"{point.valuation_day:%Y-%m-%d} 的SAFE中间价"],
-            ["XOP估值日收盘价", fmt_decimal(point.xop_close, 4), f"{point.valuation_day:%Y-%m-%d} 的XOP收盘价"],
-            ["按资产净值反推的每申赎单位XOP股数", fmt_decimal(point.q_nav, 4), "未扣除PCF现金差额，仅作对照"],
-            ["扣除现金差额后反推的每申赎单位XOP股数", fmt_decimal(point.q_net, 4), "当前程序采用该值"],
-            ["校准置信度与提示", confidence_text(basket_calibration.calibration_confidence(point)) + (f"；{point.warning}" if point.warning else ""), "用于判断反推股数是否在合理区间"],
-        ]
-        fill_explanation_table(self.pcf_preview_table, ["校准项目", "校准结果", "数据来源或计算方法"], rows)
-        self.populate_pcf_points()
-        self.status_label.setText(
-            f"已保存 {trade_day:%Y-%m-%d} PCF股数校准；采用的每申赎单位XOP股数 {point.chosen_q:.4f}"
-        )
-        self.calibrationChanged.emit()
-
-    def calculate_external_validation(self) -> None:
-        trade_day = self.date_edit_value(self.actual_query_date)
-        if self.external_refund.value() <= 0:
-            QMessageBox.information(self, "缺少实际退款", "请输入交割单中的“ETF申购退款”，不要加上ETF现金差额。")
-            return
-        try:
-            point, _state, estimate = self.estimate_for_date(
-                trade_day,
-                self.actual_query_qty.value(),
-                actual_refund=Decimal(str(self.external_refund.value())),
-                actual_cash_difference=Decimal(str(self.external_cash_difference.value())),
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "实际到账反校准失败", str(exc))
-            return
-        inferred = estimate.inferred_shares_per_cu
-        error = estimate.error_vs_calibration
-        rows = [
-            ["赎回交易日", trade_day.isoformat(), "外部赎回数据对应的 T 日"],
-            ["实际赎回份额", f"{estimate.redeem_qty:,} 份", "用于换算最小申赎单位比例"],
-            ["交割单中的ETF申购退款", fmt_money(estimate.actual_refund_cny or Decimal("0")), "只填补券退款，不包含ETF现金差额"],
-            ["交割单中的ETF现金差额", fmt_money(estimate.actual_cash_difference_cny or Decimal("0")), "该金额不参与XOP股数反推"],
-            ["实际国内总回款", fmt_money(estimate.actual_total_cash_cny or Decimal("0")), "ETF申购退款 + ETF现金差额"],
-            ["XOP卖出价格代理", fmt_decimal(estimate.xop_price, 4), price_window_text(estimate.price_window)],
-            ["赎回日CFETS美元人民币收盘价", fmt_decimal(estimate.settlement_fx, 6), "用于把实际人民币退款还原为美元"],
-            ["根据实际ETF申购退款反推的每申赎单位XOP股数", fmt_decimal(inferred or Decimal("0"), 4), "实际退款 ÷ CFETS收盘价 ÷ XOP卖出价 ÷ 赎回份额比例"],
-            ["PCF扣除现金差额后反推的每申赎单位XOP股数", fmt_decimal(point.q_net, 4), "当日PCF校准对照值"],
-            ["实际到账反推股数与PCF校准股数的差异", fmt_decimal(error or Decimal("0"), 4), "实际到账反推股数 - PCF校准股数；越接近0越吻合"],
-            ["本程序预估ETF申购退款", fmt_money(estimate.estimated_refund_cny), "便于与实际ETF申购退款直接对比"],
-        ]
-        fill_explanation_table(self.actual_validation_table, ["反校准项目", "反校准结果", "数据来源或计算方法"], rows)
-        self.status_label.setText(
-            f"已反推 {trade_day:%Y-%m-%d} 实际到账：每申赎单位XOP股数 {inferred:.4f}，"
-            f"相对PCF校准值差异 {error:.4f} 股"
-        )
-
-    def refresh_data(self) -> None:
-        self.populate_pcf_points()
-        self.populate_estimates()
-        self.populate_observations()
-
-    def populate_pcf_points(self) -> None:
-        rows: list[list[object]] = []
-        try:
-            points = self.calibration_store.load_pcf_points()
-            for point in points:
-                rows.append(
-                    [
-                        point.pcf_trading_day.isoformat(),
-                        point.valuation_day.isoformat(),
-                        fmt_money(point.nav_per_cu),
-                        fmt_money(point.cash_component),
-                        fmt_decimal(point.safe_mid_fx, 6),
-                        fmt_decimal(point.xop_close, 4),
-                        fmt_decimal(point.q_nav, 4),
-                        fmt_decimal(point.q_net, 4),
-                        fmt_decimal(point.chosen_q, 4),
-                        calibration_method_text(point.chosen_method),
-                        f"{confidence_text(basket_calibration.calibration_confidence(point))}"
-                        + (f"；{point.warning}" if point.warning else ""),
-                    ]
-                )
-        except Exception as exc:
-            rows = [["--"] * 10 + [f"读取失败：{exc}"]]
-        fill_table(
-            self.pcf_table,
-            [
-                "PCF交易日", "PCF资产估值日", "最小申赎单位资产净值", "PCF现金差额",
-                "SAFE美元人民币中间价", "XOP估值日收盘价", "按资产净值反推股数",
-                "扣除现金差额后反推股数", "程序采用的每申赎单位XOP股数", "采用方法", "校准置信度与提示",
-            ],
-            rows or [["--"] * 10 + ["暂无校准点"]],
-        )
-
-    def populate_estimates(self) -> None:
-        rows: list[list[object]] = []
-        if self.result is None:
-            fill_table(self.estimate_table, ["状态/提示"], [["暂无篮子计算结果"]])
-            return
-        for basket in self.result.baskets:
-            try:
-                point = self.calibration_store.latest_point_for_day(basket.redeem_day)
-                state = self.calibration_store.latest_state_for_day(basket.redeem_day)
-                if point is None or state is None:
-                    raise ValueError("缺少不晚于赎回日的 PCF 校准点")
-                settlement_fx = self.fx_store.get_usd_cny_cfets_close(basket.redeem_day)
-                if settlement_fx is None:
-                    raise ValueError("缺少赎回日 CFETS 收盘价")
-                xop_price = self.price_provider.get_window_price(basket.redeem_day, self.price_window)
-                estimate = settlement_estimator.estimate_redemption(
-                    basket, state, point, xop_price, settlement_fx, self.price_window
-                )
-                refund_display = fmt_money(estimate.estimated_refund_cny)
-                if basket.refund_amount > 0:
-                    source = "人工" if basket.manual_refund_applied else "实际"
-                    refund_display = (
-                        f"{fmt_money(basket.refund_amount)} （{source}；估 {fmt_money(estimate.estimated_refund_cny)}）"
-                    )
-                rows.append(
-                    [
-                        basket.sequence,
-                        basket.redeem_day.isoformat(),
-                        basket.contract_no,
-                        f"{basket.redeem_qty:,}",
-                        fmt_money(estimate.domestic_cost_cny),
-                        fmt_decimal(estimate.estimated_xop_shares, 4),
-                        price_window_text(estimate.price_window),
-                        fmt_decimal(estimate.xop_price, 4),
-                        fmt_decimal(estimate.settlement_fx, 6),
-                        refund_display,
-                        fmt_money(estimate.estimated_cash_difference_cny),
-                        fmt_money(estimate.estimated_total_cash_cny),
-                        fmt_money(estimate.estimated_domestic_pnl_cny),
-                        confidence_text(estimate.confidence) + (f"；{'；'.join(estimate.warnings)}" if estimate.warnings else ""),
-                    ]
-                )
-            except Exception as exc:
-                rows.append(
-                    [
-                        basket.sequence, basket.redeem_day.isoformat(), basket.contract_no,
-                        f"{basket.redeem_qty:,}", fmt_money(basket.domestic_cost), *(["--"] * 8), str(exc),
-                    ]
-                )
-        fill_table(
-            self.estimate_table,
-            [
-                "赎回篮子序号", "国内发起赎回的交易日", "QMT合同编号", "实际赎回份额", "国内FIFO买入成本",
-                "预估对应的XOP股数", "XOP卖出价格窗口", "XOP预估卖出价格", "CFETS美元人民币收盘价",
-                "ETF申购退款（实际值优先显示）", "ETF现金差额", "预估国内总回款",
-                "预估国内赎回盈亏", "校准置信度与提示",
-            ],
-            rows or [["--"] * 13 + ["暂无篮子"]],
-        )
-
-    def populate_observations(self) -> None:
-        try:
-            observations = self.observation_store.load()
-            rows = [
-                [
-                    item.basket_id[:8], item.redeem_day.isoformat(), item.contract_no,
-                    fmt_money(item.actual_refund_cny), fmt_money(item.actual_cash_difference_cny),
-                    fmt_decimal(item.settlement_fx, 6), fmt_decimal(item.xop_price_proxy, 4),
-                    fmt_decimal(item.inferred_shares_per_cu, 4), fmt_decimal(item.pcf_q_net, 4),
-                    fmt_decimal(item.error_vs_q_net, 4), "是" if item.included else "否", item.warning,
-                ]
-                for item in observations
-            ]
-        except Exception as exc:
-            rows = [["--"] * 11 + [f"读取失败：{exc}"]]
-        fill_table(
-            self.observation_table,
-            [
-                "赎回篮子标识", "国内发起赎回的交易日", "QMT合同编号", "实际ETF申购退款", "实际ETF现金差额",
-                "CFETS美元人民币收盘价", "XOP卖出价格代理", "实际退款反推的每申赎单位XOP股数",
-                "PCF扣除现金差额后反推股数", "实际反推股数与PCF校准股数的差异", "是否纳入校准样本", "校准提示",
-            ],
-            rows or [["--"] * 11 + ["暂无历史反校准"]],
-        )
-
-    def write_pcf_point(self) -> None:
-        current_detail = self.pcf_tab.current_detail
-        trade_day = (
-            current_detail.item.trade_date
-            if current_detail is not None
-            else self.pcf_tab._python_date(self.pcf_tab.date_edit.date())
-        )
-        try:
-            detail = self.pcf_tab.store.ensure_target_detail(trade_day)
-            valuation_day = self._metadata_day(detail.metadata.get("PreTradingDay") or "")
-            safe_mid = self.fx_store.get_usd_cny_safe_mid(valuation_day)
-            if safe_mid is None:
-                self.fx_store.ensure_trade_date(valuation_day)
-                safe_mid = self.fx_store.get_usd_cny_safe_mid(valuation_day)
-            if safe_mid is None:
-                raise ValueError(f"缺少 {valuation_day:%Y-%m-%d} SAFE 中间价")
-            xop_close = self.price_provider.get_close(valuation_day)
-            point = basket_calibration.build_pcf_calibration_point(detail, safe_mid, xop_close)
-            self.calibration_store.append_or_replace_pcf_point(point)
-        except Exception as exc:
-            QMessageBox.critical(self, "PCF 校准失败", str(exc))
-            return
-        self.refresh_data()
-        self.status_label.setText(
-            f"已写入 {point.pcf_trading_day:%Y-%m-%d} 159518 PCF股数校准点；"
-            f"扣除现金差额后的每申赎单位XOP股数 {point.q_net:.4f}"
-        )
-        self.calibrationChanged.emit()
-
-    def write_observations(self) -> None:
-        if self.result is None:
-            QMessageBox.information(self, "暂无篮子", "请先计算 QMT/IB 篮子。")
-            return
-        written = 0
-        skipped: list[str] = []
-        for basket in self.result.baskets:
-            if basket.refund_amount <= 0 or basket.actual_refund_day is None:
-                continue
-            try:
-                point = self.calibration_store.latest_point_for_day(basket.redeem_day)
-                if point is None:
-                    raise ValueError("缺少 PCF 校准点")
-                settlement_fx = self.fx_store.get_usd_cny_cfets_close(basket.redeem_day)
-                if settlement_fx is None:
-                    raise ValueError("缺少 CFETS 收盘价")
-                xop_price = self.price_provider.get_window_price(basket.redeem_day, self.price_window)
-                observation = basket_calibration.build_settlement_observation(
-                    basket, point, settlement_fx, xop_price
-                )
-                if observation is not None:
-                    self.observation_store.append_or_replace(observation)
-                    written += 1
-            except Exception as exc:
-                skipped.append(f"篮子{basket.sequence}: {exc}")
-        self.refresh_data()
-        self.status_label.setText(
-            f"已写入/更新 {written} 条历史反校准"
-            + (f"；跳过 {' | '.join(skipped)}" if skipped else "")
-        )
-
-
 class RealtimePremiumTab(QWidget):
     def __init__(self, config: dict[str, object], parent=None) -> None:
         super().__init__(parent)
@@ -3912,6 +3573,7 @@ class MainWindow(QMainWindow):
         self.resize(1420, 900)
         self.config = load_config()
         self.overrides = engine.load_overrides(OVERRIDES_PATH)
+        self.strategy_annotations = engine.load_strategy_annotations(STRATEGY_ANNOTATIONS_PATH)
         self.predicted_refund_store = settlement_estimator.PredictedRefundStore(
             Path(str(self.config.get("predicted_refund_csv_path") or DEFAULT_CONFIG["predicted_refund_csv_path"]))
         )
@@ -3943,6 +3605,8 @@ class MainWindow(QMainWindow):
         self.source_label = QLabel()
         self.source_label.setObjectName("sourceHint")
         self.source_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.source_label.setMinimumWidth(0)
+        self.source_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.status_label = QLabel("等待读取")
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
@@ -3964,65 +3628,34 @@ class MainWindow(QMainWindow):
         overview_layout.addLayout(prediction_controls)
         overview_layout.addWidget(self.basket_table, 1)
 
-        self.domestic_matches_table = configured_table()
-        self.venue_closes_table = configured_table()
-        domestic_splitter = QSplitter(Qt.Vertical)
-        basket_cost_box = QGroupBox("所选篮子国内 FIFO 成本")
-        basket_cost_layout = QVBoxLayout(basket_cost_box)
-        basket_cost_layout.addWidget(self.domestic_matches_table)
-        venue_box = QGroupBox("全部场内卖出剥离（不计入赎回篮子）")
-        venue_layout = QVBoxLayout(venue_box)
-        venue_layout.addWidget(self.venue_closes_table)
-        domestic_splitter.addWidget(basket_cost_box)
-        domestic_splitter.addWidget(venue_box)
-
-        self.ib_open_table = configured_table()
-        self.ib_close_table = configured_table()
-        self.mapping_button = QPushButton("人工指定所选篮子 IB 成交")
-        self.clear_mapping_button = QPushButton("恢复默认 FIFO")
-        ib_controls = QHBoxLayout()
-        ib_controls.addWidget(self.mapping_button)
-        ib_controls.addWidget(self.clear_mapping_button)
-        ib_controls.addStretch(1)
-        ib_splitter = QSplitter(Qt.Vertical)
-        ib_open_box = QGroupBox("所选篮子做空开仓")
-        ib_open_layout = QVBoxLayout(ib_open_box)
-        ib_open_layout.addWidget(self.ib_open_table)
-        ib_close_box = QGroupBox("所选篮子回补平仓")
-        ib_close_layout = QVBoxLayout(ib_close_box)
-        ib_close_layout.addWidget(self.ib_close_table)
-        ib_splitter.addWidget(ib_open_box)
-        ib_splitter.addWidget(ib_close_box)
-        ib_widget = QWidget()
-        ib_layout = QVBoxLayout(ib_widget)
-        ib_layout.addLayout(ib_controls)
-        ib_layout.addWidget(ib_splitter, 1)
-
         self.cash_table = configured_table()
         self.transfer_table = configured_table()
         self.warning_table = configured_table()
         self.mapping_tab = BasketMappingTab()
+        self.synthetic_base_tab = SyntheticBaseTab()
         self.ib_self_close_tab = IbSelfCloseTab()
         self.pcf_tab = SzsePcfTab(
             Path(str(self.config.get("szse_pcf_cache_dir") or (ROOT / "szse_pcf_cache"))),
             Path(str(self.config.get("fx_rates_csv_path") or (ROOT / "fx_data" / "fx_rates.csv"))),
         )
-        self.arrival_calibration_tab = ArrivalCalibrationTab(self.config, self.pcf_tab)
         self.realtime_premium_tab = RealtimePremiumTab(self.config)
         self.xop_close_orders_tab = XopCloseOrdersTab(self.realtime_premium_tab.tws_client)
         tabs = QTabWidget()
         tabs.addTab(overview, "篮子汇总")
         tabs.addTab(self.mapping_tab, "篮子配对图")
+        tabs.addTab(self.synthetic_base_tab, "合成底仓记录")
         tabs.addTab(self.pcf_tab, "申购赎回清单")
-        tabs.addTab(self.arrival_calibration_tab, "到账预估与校准工具")
         tabs.addTab(self.realtime_premium_tab, "实时溢价率")
         tabs.addTab(self.xop_close_orders_tab, "XOP晚间平仓条件单")
-        tabs.addTab(domestic_splitter, "国内 FIFO")
-        tabs.addTab(ib_widget, "IB 对冲")
         tabs.addTab(self.ib_self_close_tab, "国内外碎单自平")
         tabs.addTab(self.cash_table, "资金流水")
         tabs.addTab(self.transfer_table, "跨账户调仓")
         tabs.addTab(self.warning_table, "异常与未匹配")
+        # Hidden pages can have very wide tables. Do not let their minimum size
+        # force every other tab beyond the available screen width; each table
+        # keeps its own horizontal scrollbar when the window is narrower.
+        tabs.setMinimumWidth(0)
+        tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.tabs = tabs
 
         root = QWidget()
@@ -4049,12 +3682,12 @@ class MainWindow(QMainWindow):
         self.export_button.clicked.connect(self.export_csv)
         self.prediction_button.clicked.connect(self.recalculate_predicted_refunds)
         self.fx_spin.editingFinished.connect(self.change_fx)
-        self.mapping_button.clicked.connect(self.edit_ib_mapping)
-        self.clear_mapping_button.clicked.connect(self.clear_ib_mapping)
         self.ib_self_close_tab.mappingRequested.connect(self.edit_strategy_self_mapping)
         self.ib_self_close_tab.mappingCleared.connect(self.clear_strategy_self_mapping)
+        self.mapping_tab.syntheticEventRequested.connect(self.add_synthetic_base_records)
+        self.mapping_tab.syntheticRecordsRequested.connect(self.show_synthetic_base_records)
+        self.synthetic_base_tab.removeRequested.connect(self.remove_synthetic_base_records)
         self.tabs.currentChanged.connect(self.handle_tab_changed)
-        self.arrival_calibration_tab.calibrationChanged.connect(self.calculate)
         self.setup_menu()
         self.load_predicted_refunds()
         self.update_source_label()
@@ -4171,7 +3804,13 @@ class MainWindow(QMainWindow):
         qmt, ib = self.input_paths()
         paths = [
             str(Path(item).expanduser().resolve())
-            for item in [qmt.get("QMT1"), qmt.get("QMT2"), qmt.get("QMT3"), ib]
+            for item in [
+                qmt.get("QMT1"),
+                qmt.get("QMT2"),
+                qmt.get("QMT3"),
+                ib,
+                STRATEGY_ANNOTATIONS_PATH,
+            ]
             if item
         ]
         existing = [item for item in paths if Path(item).exists()]
@@ -4340,6 +3979,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("正在读取完整交割单并计算...")
         QApplication.processEvents()
         try:
+            self.strategy_annotations = engine.load_strategy_annotations(STRATEGY_ANNOTATIONS_PATH)
             result = engine.calculate(
                 qmt_paths,
                 ib_path,
@@ -4348,6 +3988,7 @@ class MainWindow(QMainWindow):
                 self.market_holidays(),
                 int(self.config.get("transfer_contract_gap") or engine.DEFAULT_TRANSFER_CONTRACT_GAP),
                 qmt_time_root=str(self.config.get("shared_folder_path") or ""),
+                strategy_annotations=self.strategy_annotations,
             )
         except Exception as exc:
             self.status_label.setText(f"计算失败：{exc}")
@@ -4373,8 +4014,6 @@ class MainWindow(QMainWindow):
     def handle_tab_changed(self, index: int) -> None:
         if self.tabs.widget(index) is self.pcf_tab:
             self.pcf_tab.ensure_loaded()
-        elif self.tabs.widget(index) is self.arrival_calibration_tab:
-            self.arrival_calibration_tab.refresh_data()
         elif self.tabs.widget(index) is self.realtime_premium_tab:
             self.realtime_premium_tab.ensure_started()
 
@@ -4402,13 +4041,12 @@ class MainWindow(QMainWindow):
         assert self.result is not None
         self.populate_summary()
         self.populate_baskets(selected_id)
-        self.populate_venue_closes()
         self.populate_account_transfers()
         self.populate_warnings()
         self.mapping_tab.update_data(self.result)
+        self.synthetic_base_tab.update_data(self.result)
         self.ib_self_close_tab.update_data(self.result)
         self.pcf_tab.suggest_date(self.result.qmt_latest_day or date.today())
-        self.arrival_calibration_tab.update_data(self.result)
         self.refresh_details()
 
     def populate_summary(self) -> None:
@@ -4418,17 +4056,32 @@ class MainWindow(QMainWindow):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        if self.result.effective_ib_position_qty < 0:
+            effective_ib_text = f"SELL {abs(self.result.effective_ib_position_qty):,}"
+        elif self.result.effective_ib_position_qty > 0:
+            effective_ib_text = f"BUY {self.result.effective_ib_position_qty:,}"
+        else:
+            effective_ib_text = "FLAT 0"
         values = [
             ("篮子数量", f"{len(self.result.baskets)}"),
             ("已结算", f"{len(self.result.settled_baskets)}"),
             ("已结算收益 RMB", fmt_money(self.result.settled_total_cny)),
             ("碎单自平收益 RMB", fmt_money(self.result.strategy_self_total_cny)),
+            (
+                "合成底仓",
+                f"有效 {self.result.synthetic_base_active_qty:,} | "
+                f"建立 {self.result.synthetic_base_establish_matched_qty:,} | "
+                f"消融 {self.result.synthetic_base_unwind_matched_qty:,}",
+            ),
+            ("IB有效头寸", effective_ib_text),
             ("未闭合 IB", f"SELL {self.result.unallocated_ib_sell_qty:,} / BUY {self.result.unallocated_ib_buy_qty:,}"),
             ("手工休市日", f"{len(self.market_holidays())}"),
             ("跨账户调仓", f"{len(self.result.account_transfers)}"),
         ]
-        for column, (name, value) in enumerate(values):
+        summary_columns = 5
+        for index, (name, value) in enumerate(values):
             field = QWidget()
+            field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             pnl_value = None
             if name == "已结算收益 RMB":
                 pnl_value = self.result.settled_total_cny
@@ -4448,11 +4101,19 @@ class MainWindow(QMainWindow):
             layout.setContentsMargins(8, 5, 8, 5)
             key = QLabel(name)
             key.setObjectName("summaryKey")
+            key.setMinimumWidth(0)
+            key.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             val = QLabel(value)
             val.setObjectName(value_name)
+            val.setMinimumWidth(0)
+            val.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            val.setWordWrap(True)
             layout.addWidget(key)
             layout.addWidget(val)
-            self.summary_grid.addWidget(field, 0, column)
+            row, column = divmod(index, summary_columns)
+            self.summary_grid.addWidget(field, row, column)
+        for column in range(summary_columns):
+            self.summary_grid.setColumnStretch(column, 1)
 
     def populate_baskets(self, selected_id: str | None) -> None:
         assert self.result is not None
@@ -4460,14 +4121,14 @@ class MainWindow(QMainWindow):
         if detailed:
             headers = [
                 "轮次", "状态", "赎回日", "预计T+3", "实际T+3", "预计T+6到账", "实际到账",
-                "来源", "合同编号", "国内成本", "现金差额", "退款", "篮子资产", "预估篮子资产", "篮子偏差", "预估总收益", "收益偏差", "国内盈亏",
-                "IB股数", "IB净盈亏USD", "IB净盈亏RMB", "合计RMB", "IB映射",
+                "来源", "合同编号", "国内成本", "现金差额", "退款", "篮子资产", "预估篮子资产", "篮子偏差", "国内盈亏",
+                "IB股数", "IB净盈亏USD", "IB净盈亏RMB", "预估总收益", "收益偏差", "合计RMB", "IB映射",
             ]
         else:
             headers = [
                 "轮次", "状态", "赎回日", "T+3", "T+6到账", "国内成本",
-                "现金差额", "退款", "篮子资产", "预估篮子资产", "篮子偏差", "预估总收益", "收益偏差", "国内盈亏",
-                "合计RMB", "IB映射",
+                "现金差额", "退款", "篮子资产", "预估篮子资产", "篮子偏差", "国内盈亏",
+                "预估总收益", "收益偏差", "合计RMB", "IB映射",
             ]
         rows = []
         payloads = []
@@ -4479,9 +4140,11 @@ class MainWindow(QMainWindow):
                 self.actual_basket_asset_text(basket),
                 self.predicted_basket_asset_text(basket),
                 self.basket_asset_prediction_error_text(basket),
+                fmt_money(basket.domestic_pnl),
+            ]
+            prediction_values = [
                 self.predicted_total_pnl_text(basket),
                 self.total_pnl_prediction_deviation_text(basket),
-                fmt_money(basket.domestic_pnl),
             ]
             ib_values = [
                 f"{basket.hedge_target - basket.ib_open_shortfall:,}/{basket.hedge_target:,}",
@@ -4503,6 +4166,7 @@ class MainWindow(QMainWindow):
                         basket.contract_no,
                         *estimate_values,
                         *ib_values,
+                        *prediction_values,
                         *result_values,
                     ]
                 )
@@ -4515,6 +4179,7 @@ class MainWindow(QMainWindow):
                         basket_summary_date_text(basket.expected_cash_difference_day, detailed=False),
                         basket_summary_date_text(basket.expected_refund_day, detailed=False),
                         *estimate_values,
+                        *prediction_values,
                         *result_values,
                     ]
                 )
@@ -4553,38 +4218,6 @@ class MainWindow(QMainWindow):
         if self.basket_table.rowCount():
             self.basket_table.selectRow(selected_row)
             self.basket_table.horizontalScrollBar().setValue(0)
-
-    def populate_venue_closes(self) -> None:
-        assert self.result is not None
-        headers = [
-            "状态", "日期", "时间", "账户", "合同编号", "数量", "卖出净额", "FIFO成本", "场内收益",
-            "IB开/目标/平", "IB盈亏USD", "IB盈亏RMB", "合计RMB", "配对", "库存/IB缺口",
-        ]
-        rows = [
-            [
-                item.status,
-                item.trade_day.isoformat(),
-                item.trade_dt.strftime("%H:%M:%S") if item.trade_dt else "--",
-                item.source,
-                item.contract_no,
-                f"{item.qty:,}",
-                fmt_money(item.proceeds),
-                fmt_money(item.cost),
-                fmt_money(item.pnl),
-                f"{item.ib_open_qty:,}/{item.hedge_target:,}/{item.ib_close_qty:,}",
-                fmt_decimal(item.ib_trade_pnl_usd),
-                fmt_money(item.ib_pnl_cny),
-                fmt_money(item.total_pnl_cny),
-                "人工" if item.manual_ib_mapping else "自动",
-                f"{item.inventory_shortfall:,}/{item.ib_open_shortfall + item.ib_close_shortfall:,}",
-            ]
-            for item in self.result.venue_closes
-        ]
-        fill_table(
-            self.venue_closes_table,
-            headers,
-            rows or [["--"] * (len(headers) - 1) + ["暂无场内卖出"]],
-        )
 
     def populate_account_transfers(self) -> None:
         assert self.result is not None
@@ -4706,24 +4339,6 @@ class MainWindow(QMainWindow):
         basket = self.selected_basket()
         if basket is None:
             return
-        domestic_rows = [
-            [
-                item.trade_day.isoformat(),
-                item.source,
-                item.contract_no,
-                f"{item.qty:,}",
-                fmt_money(item.cost),
-                f"{sum(hedge.qty for hedge in item.qmt3_hedge_open):,}/{item.qmt3_hedge_target:,}",
-            ]
-            for item in basket.domestic_matches
-        ]
-        fill_table(
-            self.domestic_matches_table,
-            ["买入日期", "来源账户", "买入合同", "使用数量", "分摊成本", "QMT3承接IB"],
-            domestic_rows,
-        )
-        self._fill_ib_table(self.ib_open_table, basket.ib_open)
-        self._fill_ib_table(self.ib_close_table, basket.ib_close)
         cash_rows = [
             [item.trade_day.isoformat(), item.source, item.contract_no, item.action, fmt_money(item.amount), item.row_number]
             for item in basket.cash_flows
@@ -4741,52 +4356,100 @@ class MainWindow(QMainWindow):
         )
         fill_table(self.cash_table, ["日期", "账户", "合同编号", "业务", "金额", "源行号"], cash_rows or [["--", basket.source, basket.contract_no, "--", "暂无相关资金流水", "--"]])
 
-    @staticmethod
-    def _fill_ib_table(table: QTableWidget, slices: tuple[engine.IbSlice, ...]) -> None:
-        rows = [
-            [
-                item.dt.strftime("%Y-%m-%d %H:%M:%S"),
-                item.side,
-                item.role or "--",
-                item.qty,
-                fmt_decimal(item.price, 4),
-                fmt_money(item.gross),
-                fmt_decimal(item.commission),
-                item.trade_id,
-            ]
-            for item in slices
-        ]
-        fill_table(table, ["时间（IB账单）", "方向", "角色", "数量", "价格", "成交额USD", "佣金USD", "交易ID"], rows)
+    def show_synthetic_base_records(self) -> None:
+        index = self.tabs.indexOf(self.synthetic_base_tab)
+        if index >= 0:
+            self.tabs.setCurrentIndex(index)
 
-    def edit_ib_mapping(self) -> None:
+    def add_synthetic_base_records(self, event_type: str, raw_trade_ids: object) -> None:
         if self.result is None:
             return
-        basket = self.selected_basket()
-        if basket is None:
-            QMessageBox.information(self, "未选中", "请先选择一个篮子。")
+        expected_side = "BUY" if event_type == "establish" else "SELL"
+        selected_ids = list(dict.fromkeys(str(item) for item in list(raw_trade_ids or [])))
+        raw_by_id = {item.id: item for item in self.result.raw_ib_trades}
+        missing = [item for item in selected_ids if item not in raw_by_id]
+        if missing:
+            QMessageBox.warning(
+                self,
+                "无法定位原始成交",
+                f"有 {len(missing)} 笔配对切片无法映射回当前IB原始成交，请先重新计算后再试。",
+            )
             return
-        override = self.overrides.get(basket.id, {})
-        open_ids = set(override.get("open_trade_ids") or [item.trade_id for item in basket.ib_open])
-        close_ids = set(override.get("close_trade_ids") or [item.trade_id for item in basket.ib_close])
-        dialog = IbMappingDialog(basket, self.result.ib_trades, open_ids, close_ids, self)
+        trades = [raw_by_id[item] for item in selected_ids]
+        wrong_side = [item for item in trades if item.side != expected_side]
+        if wrong_side:
+            QMessageBox.warning(
+                self,
+                "成交方向不一致",
+                f"{'建立' if event_type == 'establish' else '消融'}只能选择 {expected_side} 成交。",
+            )
+            return
+
+        already_used = engine.synthetic_base_event_qty_by_trade(self.strategy_annotations)
+        available_by_id = {
+            trade.id: abs(trade.qty) - already_used.get(trade.id, 0)
+            for trade in trades
+            if abs(trade.qty) - already_used.get(trade.id, 0) > 0
+        }
+        trades = [item for item in trades if item.id in available_by_id]
+        if not trades:
+            QMessageBox.information(self, "没有可标记数量", "所选委托已经全部进入合成底仓记录。")
+            return
+        _, _, configured_active = engine.synthetic_base_configured_totals(self.strategy_annotations)
+        if event_type == "unwind" and configured_active <= 0:
+            QMessageBox.warning(self, "没有可消融底仓", "当前没有尚未消融的合成底仓。")
+            return
+
+        dialog = SyntheticBaseEventDialog(
+            event_type,
+            trades,
+            available_by_id,
+            configured_active,
+            self,
+        )
         if dialog.exec_() != QDialog.Accepted:
             return
-        override = dict(self.overrides.get(basket.id, {}))
-        override.update({
-            "open_trade_ids": dialog.selected_ids(dialog.open_table),
-            "close_trade_ids": dialog.selected_ids(dialog.close_table),
-        })
-        override.pop("manual_virtual_close", None)
-        self.overrides[basket.id] = override
-        engine.save_overrides(OVERRIDES_PATH, self.overrides)
+        try:
+            updated = engine.add_synthetic_base_events(
+                self.strategy_annotations,
+                self.result.raw_ib_trades,
+                event_type,
+                dialog.quantities(),
+            )
+            engine.save_strategy_annotations(STRATEGY_ANNOTATIONS_PATH, updated)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "合成底仓记录保存失败", str(exc))
+            return
+        self.strategy_annotations = updated
         self.calculate()
 
-    def clear_ib_mapping(self) -> None:
-        basket = self.selected_basket()
-        if basket is None or basket.id not in self.overrides:
+    def remove_synthetic_base_records(self, event_ids: object) -> None:
+        selected = {str(item) for item in list(event_ids or [])}
+        if not selected:
             return
-        self.overrides.pop(basket.id, None)
-        engine.save_overrides(OVERRIDES_PATH, self.overrides)
+        records = [
+            item for item in (self.result.synthetic_base_records if self.result is not None else ())
+            if item.event_id in selected
+        ]
+        establish_qty = sum(item.configured_qty for item in records if item.event_type == "establish")
+        unwind_qty = sum(item.configured_qty for item in records if item.event_type == "unwind")
+        answer = QMessageBox.question(
+            self,
+            "释放回公共池",
+            f"将移除 {len(selected)} 条记录：建立 {establish_qty:,} 股，消融 {unwind_qty:,} 股。\n\n"
+            "对应成交会重新参与篮子、碎单自平和未闭合头寸的时间FIFO，后续篮子成本可能随之变化。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            updated = engine.remove_synthetic_base_events(self.strategy_annotations, selected)
+            engine.save_strategy_annotations(STRATEGY_ANNOTATIONS_PATH, updated)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "无法移除", str(exc))
+            return
+        self.strategy_annotations = updated
         self.calculate()
 
     def edit_strategy_self_mapping(self, strategy_id: str) -> None:
