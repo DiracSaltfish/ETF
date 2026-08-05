@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+config.json
+fx_data/
+szse_pcf_cache/
+ib_flex_cache/
+ib_auto_data/
+data/
+临时研究数据/*
+!临时研究数据/用途说明.md

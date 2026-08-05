@@ -1,0 +1,155 @@
+{
+  "version": 2,
+  "description": "仅人工指定的XOP建立/消融合成底仓成交从赎回主账排除；其余成交按原时间顺序正常处理。",
+  "synthetic_base_positions": [
+    {
+      "position_id": "synthetic-base-2000",
+      "target_qty": 2000,
+      "component_short_days": [
+        "2026-07-01",
+        "2026-07-02"
+      ],
+      "status": "active",
+      "note": "成分券组合空头 + 2,000股XOP多头的合成底仓"
+    }
+  ],
+  "synthetic_base_groups": [
+    {
+      "group_id": "2026-07-01-990",
+      "position_id": "synthetic-base-2000",
+      "xop_qty": 990,
+      "component_short_day": "2026-07-01",
+      "component_symbol_count": 50,
+      "component_sell_fill_count": 50,
+      "component_gross_usd": "151080.5435"
+    },
+    {
+      "group_id": "2026-07-02-1010",
+      "position_id": "synthetic-base-2000",
+      "xop_qty": 1010,
+      "component_short_day": "2026-07-02",
+      "component_symbol_count": 51,
+      "component_sell_fill_count": 51,
+      "component_gross_usd": "157874.3870"
+    }
+  ],
+  "synthetic_base_events": [
+    {
+      "event_id": "establish-8e1e1bb4d13c6dd02494",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-01-990",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "8e1e1bb4d13c6dd02494",
+      "trade_dt": "2026-07-01 15:04:31",
+      "qty": 200,
+      "original_qty": 200,
+      "price": "153.635",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-9efd912d26b43f048092",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-01-990",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "9efd912d26b43f048092",
+      "trade_dt": "2026-07-01 15:04:43",
+      "qty": 200,
+      "original_qty": 200,
+      "price": "153.6262",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-61b0182c4c7d68d80491",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-01-990",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "61b0182c4c7d68d80491",
+      "trade_dt": "2026-07-01 15:06:22",
+      "qty": 200,
+      "original_qty": 200,
+      "price": "153.664678",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-931a13cebca64227a9fa",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-01-990",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "931a13cebca64227a9fa",
+      "trade_dt": "2026-07-01 15:06:35",
+      "qty": 200,
+      "original_qty": 200,
+      "price": "153.64",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-b7e3288ee8b10b65c1b8",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-01-990",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "b7e3288ee8b10b65c1b8",
+      "trade_dt": "2026-07-01 15:06:40",
+      "qty": 190,
+      "original_qty": 190,
+      "price": "153.62",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-3dc76e50929de98a39c5",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-02-1010",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "3dc76e50929de98a39c5",
+      "trade_dt": "2026-07-02 10:08:04",
+      "qty": 200,
+      "original_qty": 200,
+      "price": "155.3",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-f851fa48ae260fdffef0",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-02-1010",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "f851fa48ae260fdffef0",
+      "trade_dt": "2026-07-02 10:08:29",
+      "qty": 200,
+      "original_qty": 200,
+      "price": "155.24",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-fff064a6fdcdc8eb6620",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-02-1010",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "fff064a6fdcdc8eb6620",
+      "trade_dt": "2026-07-02 10:08:47",
+      "qty": 200,
+      "original_qty": 200,
+      "price": "155.065",
+      "enabled": true
+    },
+    {
+      "event_id": "establish-a312bcfc43085c4d751f",
+      "event_type": "establish",
+      "side": "BUY",
+      "group_id": "2026-07-02-1010",
+      "position_id": "synthetic-base-2000",
+      "trade_id": "a312bcfc43085c4d751f",
+      "trade_dt": "2026-07-02 10:09:26",
+      "qty": 410,
+      "original_qty": 410,
+      "price": "155.13",
+      "enabled": true
+    }
+  ]
+}
