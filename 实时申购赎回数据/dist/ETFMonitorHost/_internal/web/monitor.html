@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ETF 变化监控</title>
+  <style>
+    :root { color-scheme: light; --blue:#2f6feb; --ink:#172033; --muted:#68758a;
+      --line:#dce3ec; --bg:#f5f7fa; --card:#fff; --green:#168553; --red:#c53b45; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system,
+      BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+    main { max-width:1500px; margin:0 auto; padding:20px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+      padding:14px 16px; margin-bottom:14px; box-shadow:0 1px 2px #1720330a; }
+    .toolbar { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+    .grow { flex:1; }
+    button,input { font:inherit; border-radius:7px; border:1px solid #cbd5e1;
+      background:#fff; color:var(--ink); padding:8px 13px; }
+    input { min-width:170px; outline:none; }
+    input:focus { border-color:var(--blue); box-shadow:0 0 0 3px #2f6feb18; }
+    button { cursor:pointer; background:#f8fafc; }
+    button:hover { background:#eef3f9; }
+    button.primary { color:white; background:var(--blue); border-color:var(--blue); }
+    button.danger { color:var(--red); }
+    .status { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+    .dot::before { content:""; display:inline-block; width:9px; height:9px; border-radius:50%;
+      margin-right:7px; background:#94a3b8; }
+    .dot.online::before { background:#19b36b; }
+    .dot.offline::before { background:#e05260; }
+    .muted { color:var(--muted); }
+    .table-wrap { overflow:auto; min-height:360px; }
+    table { width:100%; border-collapse:collapse; white-space:nowrap; }
+    th,td { border-bottom:1px solid #e4e9f0; padding:11px 10px; text-align:center; }
+    th { position:sticky; top:0; background:#eef2f7; color:#526074; font-weight:650; }
+    td.change { text-align:left; white-space:normal; min-width:260px; }
+    .positive { color:var(--green); font-weight:700; }
+    .negative { color:var(--red); font-weight:700; }
+    tbody tr { cursor:pointer; }
+    tbody tr:hover { background:#f7faff; }
+    .modal { position:fixed; inset:0; z-index:30; display:none; place-items:center;
+      padding:24px; background:#17203373; }
+    .modal.open { display:grid; }
+    .modal-card { width:min(1200px,96vw); max-height:90vh; overflow:auto; background:#fff;
+      border-radius:12px; box-shadow:0 22px 70px #17203355; padding:18px; }
+    .modal-head { display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; }
+    .modal-head h2 { margin:0 0 4px; font-size:20px; }
+    .pcf-grid { display:grid; grid-template-columns:minmax(300px,.7fr) minmax(520px,1.3fr); gap:14px; }
+    .pcf-grid .table-wrap { min-height:0; max-height:65vh; border:1px solid var(--line); border-radius:9px; }
+    .pcf-grid td { text-align:left; }
+    .toast-area { position:fixed; z-index:20; right:18px; top:18px; width:min(520px,calc(100vw - 36px)); }
+    .toast { background:#fff; border:1px solid #f3b4ba; border-left:5px solid var(--red);
+      border-radius:9px; padding:13px 15px; margin-bottom:10px; box-shadow:0 10px 35px #1720332b;
+      animation:slide .18s ease-out; white-space:pre-line; }
+    .toast strong { display:block; margin-bottom:5px; }
+    @keyframes slide { from { transform:translateY(-8px); opacity:0; } }
+    @media(max-width:900px) { .pcf-grid{grid-template-columns:1fr}.modal{padding:8px} }
+    @media(max-width:720px) { main{padding:10px}.card{padding:11px}.desktop-only{display:none} }
+  </style>
+</head>
+<body>
+<div id="toasts" class="toast-area"></div>
+<main>
+  <section class="card toolbar">
+    <button id="start" class="primary">开始监控</button>
+    <button id="stop">停止监控</button>
+    <button id="pull">拉取当前全量</button>
+    <button id="refreshPcf">刷新 PCF</button>
+    <button id="sound">启用声音</button>
+    <button id="notify">允许系统通知</button>
+    <span class="grow"></span>
+    <span id="socketStatus" class="dot offline">连接中</span>
+  </section>
+
+  <section class="card toolbar">
+    <label for="symbol">深圳代码</label>
+    <input id="symbol" inputmode="numeric" maxlength="6" placeholder="例如 159518">
+    <button id="add">添加</button>
+    <span class="grow"></span>
+    <span id="summary" class="muted">等待全量数据</span>
+  </section>
+
+  <section class="card table-wrap">
+    <table>
+      <thead><tr>
+        <th>标的</th><th>状态</th><th>申购笔数</th><th>申购份额</th>
+        <th>赎回笔数</th><th>赎回份额</th><th>轧差份额</th>
+        <th>机会判断</th><th>更新时间</th><th>最近变化</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+  <div id="footer" class="muted">双击标的可查看 PCF；浏览器首次点击“启用声音”后，变化推送才能播放提示音。</div>
+</main>
+<div id="pcfModal" class="modal" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="grow"><h2 id="pcfTitle">PCF 详细信息</h2><div id="pcfSignal" class="muted"></div></div>
+      <button id="pcfClose">关闭</button>
+    </div>
+    <div class="pcf-grid">
+      <div class="table-wrap"><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="pcfSummary"></tbody></table></div>
+      <div class="table-wrap"><table><thead id="pcfComponentHead"></thead><tbody id="pcfComponents"></tbody></table></div>
+    </div>
+  </div>
+</div>
+<script>
+  const state = { items:new Map(), ws:null, reconnect:null, audio:null, sound:false };
+  const $ = id => document.getElementById(id);
+  const fmt = (v,signed=false) => {
+    if (v === null || v === undefined) return '—';
+    const n = Number(v); const text = Math.abs(n).toLocaleString('zh-CN');
+    if (signed && n > 0) return '+' + text;
+    if (n < 0) return '-' + text;
+    return text;
+  };
+  const esc = s => String(s ?? '').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const statusText = s => ({waiting:'等待数据',connecting:'连接中',monitoring:'监控中',
+    cached:'缓存数据',stopped:'已停止',error:'错误',reconnecting:'重连中'}[s] || s || '—');
+  const timeOnly = value => {
+    let text=String(value||'').trim(); if(!text) return '—';
+    if(text.includes('T')) text=text.split('T',2)[1];
+    if(text.includes('+')) text=text.split('+',1)[0];
+    if(text.endsWith('Z')) text=text.slice(0,-1);
+    return text.slice(0,8);
+  };
+
+  function render() {
+    const symbols = [...state.items.keys()].sort();
+    $('rows').innerHTML = symbols.map(symbol => {
+      const item=state.items.get(symbol), v=item.values||{};
+      const net=v.netamount===null||v.netamount===undefined?null:Number(v.netamount);
+      const opportunity=item.opportunity||{};
+      const change=(item.last_change||[]).map(x=>x.text).join('；') || '—';
+      const netClass=net!==null&&net>0?'positive':net!==null&&net<0?'negative':'';
+      const opportunityClass=opportunity.kind==='creation'?'positive':opportunity.kind==='redemption'?'negative':'';
+      return `<tr data-symbol="${esc(symbol)}"><td><b>${esc(symbol)}</b></td>
+        <td>${esc(statusText(item.status))}</td><td>${fmt(v.etfbuynumber)}</td>
+        <td>${fmt(v.etfbuyamount)}</td><td>${fmt(v.etfsellnumber)}</td>
+        <td>${fmt(v.etfsellamount)}</td><td class="${netClass}">${fmt(net,true)}</td>
+        <td class="${opportunityClass}">${esc(opportunity.label||'待确认')}</td>
+        <td>${esc(timeOnly(item.updated_at))}</td><td class="change">${esc(change)}</td></tr>`;
+    }).join('');
+    $('rows').querySelectorAll('tr').forEach(row=>row.ondblclick=()=>openPcf(row.dataset.symbol));
+  }
+
+  function applySnapshot(event) {
+    state.items.clear();
+    (event.items||[]).forEach(item=>state.items.set(String(item.symbol),item));
+    render();
+    $('summary').textContent=event.last_error ||
+      `${state.items.size} 个标的 · 主机${event.monitoring?'监控中':'未监控'} · ${event.server_time||''}`;
+  }
+
+  function toast(message) {
+    const box=document.createElement('div'); box.className='toast';
+    box.innerHTML=`<strong>份额变化提醒</strong>${esc(message)}`;
+    $('toasts').appendChild(box); setTimeout(()=>box.remove(),12000);
+  }
+
+  function beep() {
+    if (!state.sound || !state.audio) return;
+    const ctx=state.audio; const oscillator=ctx.createOscillator();
+    const gain=ctx.createGain(); oscillator.frequency.value=880;
+    gain.gain.setValueAtTime(.18,ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.45);
+    oscillator.connect(gain).connect(ctx.destination); oscillator.start();
+    oscillator.stop(ctx.currentTime+.45);
+  }
+
+  function applyChange(event) {
+    const messages=[];
+    (event.items||[]).forEach(changed=>{
+      if(changed.current) state.items.set(String(changed.symbol),changed.current);
+      messages.push(`${changed.symbol}：${(changed.changes||[]).map(x=>x.text).join('；')}`);
+    });
+    render(); if(!messages.length) return;
+    const message=messages.join('\n'); toast(message); beep();
+    if(document.hidden && Notification.permission==='granted')
+      new Notification('ETF 份额变化',{body:message});
+  }
+
+  function connect() {
+    clearTimeout(state.reconnect);
+    const scheme=location.protocol==='https:'?'wss':'ws';
+    state.ws=new WebSocket(`${scheme}://${location.host}/ws/v1/changes`);
+    state.ws.onopen=()=>{ $('socketStatus').className='dot online'; $('socketStatus').textContent='已连接'; };
+    state.ws.onclose=()=>{ $('socketStatus').className='dot offline'; $('socketStatus').textContent='已断开，正在重连'; state.reconnect=setTimeout(connect,3000); };
+    state.ws.onmessage=e=>{ const event=JSON.parse(e.data);
+      if(event.type==='snapshot') applySnapshot(event);
+      else if(event.type==='change') applyChange(event);
+      else if(event.type==='status') $('footer').textContent=event.message||'';
+      else if(event.type==='heartbeat') $('footer').textContent=`心跳 ${event.server_time||''}`;
+    };
+  }
+
+  async function api(path,method='GET',body=null) {
+    const response=await fetch(path,{method,headers:{'Content-Type':'application/json'},
+      body:body?JSON.stringify(body):null});
+    if(!response.ok) throw new Error(await response.text());
+    return response.json();
+  }
+
+  async function openPcf(symbol) {
+    $('footer').textContent=`正在读取 ${symbol} 的当日 PCF…`;
+    try {
+      const payload=await api(`/api/v1/pcf/${encodeURIComponent(symbol)}`);
+      const opportunity=payload.opportunity||{};
+      $('pcfTitle').textContent=`${payload.symbol||symbol}  ${payload.fund_name||''} · PCF ${payload.trading_day||'—'}`;
+      $('pcfSignal').textContent=`判断：${opportunity.label||'待确认'} · ${opportunity.reason||''}`;
+      $('pcfSignal').className=opportunity.kind==='creation'?'positive':opportunity.kind==='redemption'?'negative':'muted';
+      $('pcfSummary').innerHTML=(payload.summary_fields||[]).map(field=>
+        `<tr><td>${esc(field.label||field.field)}</td><td>${esc(field.value)}</td></tr>`).join('') ||
+        `<tr><td colspan="2">${esc(payload.error||'暂无结构化 PCF')}</td></tr>`;
+      const columns=payload.component_columns||[];
+      $('pcfComponentHead').innerHTML=`<tr>${columns.map(column=>`<th>${esc(column.label||column.field)}</th>`).join('')}</tr>`;
+      $('pcfComponents').innerHTML=(payload.components||[]).map(component=>
+        `<tr>${columns.map(column=>`<td>${esc(component[column.field]||'')}</td>`).join('')}</tr>`).join('') ||
+        `<tr><td colspan="${Math.max(1,columns.length)}">暂无成分证券</td></tr>`;
+      $('pcfModal').classList.add('open');
+      $('footer').textContent=`PCF 已打开 · ${payload.symbol||symbol} · ${payload.trading_day||'无日期'}`;
+    } catch(e) { toast(e.message); $('footer').textContent=`PCF 读取失败：${e.message}`; }
+  }
+
+  $('pull').onclick=()=>state.ws?.readyState===1
+    ?state.ws.send(JSON.stringify({type:'get_snapshot'}))
+    :api('/api/v1/snapshot').then(applySnapshot).catch(e=>toast(e.message));
+  $('start').onclick=()=>api('/api/v1/monitor/start','POST').then(applySnapshot).catch(e=>toast(e.message));
+  $('stop').onclick=()=>api('/api/v1/monitor/stop','POST').then(applySnapshot).catch(e=>toast(e.message));
+  $('refreshPcf').onclick=()=>api('/api/v1/pcf/refresh','POST').then(applySnapshot).catch(e=>toast(e.message));
+  $('add').onclick=async()=>{
+    const code=$('symbol').value.trim(); if(!/^\d{6}$/.test(code)) return toast('请输入 6 位深圳代码');
+    const symbols=[...new Set([...state.items.keys(),code])].sort();
+    try { applySnapshot(await api('/api/v1/watchlist','PUT',{symbols})); $('symbol').value=''; }
+    catch(e){toast(e.message)}
+  };
+  $('sound').onclick=async()=>{
+    state.audio ||= new (window.AudioContext||window.webkitAudioContext)();
+    await state.audio.resume(); state.sound=true; $('sound').textContent='声音已启用'; beep();
+  };
+  $('notify').onclick=async()=>{
+    if(!('Notification' in window)) return toast('当前浏览器不支持系统通知');
+    const permission=await Notification.requestPermission();
+    $('notify').textContent=permission==='granted'?'系统通知已允许':'系统通知未允许';
+  };
+  $('pcfClose').onclick=()=>$('pcfModal').classList.remove('open');
+  $('pcfModal').onclick=event=>{ if(event.target===$('pcfModal')) $('pcfModal').classList.remove('open'); };
+  connect();
+</script>
+</body>
+</html>
