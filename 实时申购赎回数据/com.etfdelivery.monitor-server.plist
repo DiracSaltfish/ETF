@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.etfdelivery.monitor-server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ellis/miniconda3/envs/ag/bin/python</string>
+        <string>/Users/ellis/Desktop/ETF交割/实时申购赎回数据/etf_monitor_server.py</string>
+        <string>--config</string>
+        <string>/Users/ellis/Desktop/ETF交割/实时申购赎回数据/config/etf_monitor_server.json</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/ellis/Desktop/ETF交割/实时申购赎回数据</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>/Users/ellis/Desktop/ETF交割/实时申购赎回数据/logs/server.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ellis/Desktop/ETF交割/实时申购赎回数据/logs/server.stderr.log</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

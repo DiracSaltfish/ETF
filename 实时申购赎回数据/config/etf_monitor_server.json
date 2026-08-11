@@ -1,0 +1,35 @@
+{
+  "symbols": [
+    "159518",
+    "159393"
+  ],
+  "refresh_interval_seconds": 1.0,
+  "network": {
+    "host": "0.0.0.0",
+    "port": 6787
+  },
+  "schedule": {
+    "enabled": true,
+    "timezone": "Asia/Shanghai",
+    "weekdays": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "start": "09:15",
+    "stop": "15:10"
+  },
+  "pcf": {
+    "enabled": true,
+    "timezone": "Asia/Shanghai",
+    "weekdays": [0, 1, 2, 3, 4],
+    "fetch_start": "08:00",
+    "fetch_end": "23:00",
+    "retry_interval_seconds": 900,
+    "max_auto_attempts_per_symbol_per_day": 8,
+    "min_request_interval_seconds": 8,
+    "cache_dir": ""
+  }
+}

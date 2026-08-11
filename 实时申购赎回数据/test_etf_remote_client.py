@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+
+import os
+import unittest
+from unittest.mock import patch
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PyQt6.QtWidgets import QApplication
+
+from etf_remote_client import RemoteClientWindow, resource_path, split_address
+
+
+APP = QApplication.instance() or QApplication([])
+
+
+class RemoteClientTest(unittest.TestCase):
+    def test_snapshot_and_change_trigger_local_alert(self) -> None:
+        window = RemoteClientWindow()
+        window.popup_check.setChecked(True)
+        window.sound_check.setChecked(True)
+        item = {
+            "symbol": "159518",
+            "status": "monitoring",
+            "values": {
+                "etfbuynumber": 3,
+                "etfbuyamount": 3_000_000,
+                "etfsellnumber": 2,
+                "etfsellamount": 2_000_000,
+                "netamount": 1_000_000,
+            },
+            "updated_at": "2026-08-11T09:30:00+08:00",
+            "last_change": [],
+            "pcf": {
+                "status": "ready",
+                "trading_day": "2026-08-11",
+                "creation_redemption_unit": 1_000_000,
+            },
+            "opportunity": {
+                "kind": "creation",
+                "label": "申购机会",
+                "reason": "净申购 1.00 篮子",
+            },
+        }
+        window._apply_snapshot(
+            {"type": "snapshot", "items": [item], "monitoring": True}
+        )
+        self.assertEqual(window.table.item(0, 6).text(), "+1,000,000")
+        self.assertEqual(window.table.item(0, 7).text(), "申购机会")
+        self.assertEqual(window.table.columnCount(), 10)
+        self.assertEqual(window.table.item(0, 8).text(), "09:30:00")
+        self.assertTrue(window.baseline_established)
+        self.assertTrue(window.reset_baseline_button.isEnabled())
+
+        changed_item = dict(item)
+        changed_item["values"] = dict(item["values"], netamount=2_000_000)
+        event = {
+            "type": "change",
+            "items": [
+                {
+                    "symbol": "159518",
+                    "current": changed_item,
+                    "changes": [
+                        {
+                            "field": "netamount",
+                            "text": "轧差份额 +1,000,000 → +2,000,000",
+                        }
+                    ],
+                }
+            ],
+        }
+        with patch.object(window, "play_alert_sound", return_value=True) as play_sound, patch(
+            "etf_remote_client.QApplication.beep"
+        ) as beep:
+            window._apply_change(event)
+            play_sound.assert_called_once()
+            beep.assert_not_called()
+        self.assertEqual(len(window.alert_popups), 1)
+        self.assertIn("轧差份额", window.alert_popups[0].findChildren(type(window.connection_label))[1].text())
+        self.assertIn("159518", window.changed_symbols)
+        self.assertEqual(window.table.item(0, 0).background().color().name(), "#fff0bd")
+        self.assertFalse(window.change_banner.isHidden())
+        window.reset_change_baseline()
+        self.assertFalse(window.changed_symbols)
+        self.assertTrue(window.change_banner.isHidden())
+        self.assertEqual(window.table.item(0, 0).background().color().name(), "#000000")
+        for popup in list(window.alert_popups):
+            popup.close()
+        window.close()
+
+    def test_connection_settings_and_builtin_sounds_are_available(self) -> None:
+        self.assertEqual(split_address("http://192.168.1.8:7000/"), ("192.168.1.8", 7000))
+        self.assertEqual(split_address("monitor-host"), ("monitor-host", 6787))
+        for filename in ("bright.wav", "radar.wav", "bell.wav", "urgent.wav", "soft.wav"):
+            self.assertTrue(resource_path("assets", "sounds", filename).is_file())
+
+    def test_connection_button_uses_manual_red_and_connected_green_states(self) -> None:
+        window = RemoteClientWindow(settings_name="TestConnectionButton")
+        self.assertFalse(window.auto_connect_enabled)
+        self.assertEqual(window.connect_button.property("connection_state"), "disconnected")
+        self.assertIn("#c53b45", window.connect_button.styleSheet())
+        window._on_connected()
+        self.assertEqual(window.connect_button.property("connection_state"), "connected")
+        self.assertIn("#168553", window.connect_button.styleSheet())
+        window._on_disconnected()
+        self.assertEqual(window.connect_button.property("connection_state"), "disconnected")
+        window.close()
+
+    def test_alert_cooldown_does_not_block_table_updates(self) -> None:
+        window = RemoteClientWindow()
+        window.alert_cooldown_seconds = 60
+        window.last_alert_at = 100.0
+        event = {
+            "type": "change",
+            "items": [{"symbol": "159518", "current": {"symbol": "159518"}, "changes": [{"text": "变化"}]}],
+        }
+        with patch("etf_remote_client.time.monotonic", return_value=101.0), patch.object(
+            window, "play_alert_sound"
+        ) as play_sound:
+            window._apply_change(event)
+        self.assertIn("159518", window.items)
+        play_sound.assert_not_called()
+        self.assertIn("冷却中", window.footer_label.text())
+        window.close()
+
+    def test_pcf_detail_dialog_renders_summary_and_components(self) -> None:
+        window = RemoteClientWindow()
+        payload = {
+            "symbol": "159518",
+            "fund_name": "测试 ETF",
+            "trading_day": "2026-08-11",
+            "opportunity": {"kind": "creation", "label": "申购机会", "reason": "1 篮子"},
+            "summary_fields": [{"field": "CreationRedemptionUnit", "label": "最小申赎单位", "value": "1000000"}],
+            "component_columns": [{"field": "UnderlyingSecurityID", "label": "证券代码"}],
+            "components": [{"UnderlyingSecurityID": "XOP"}],
+        }
+        window._show_pcf_detail(payload)
+        self.assertEqual(len(window.pcf_dialogs), 1)
+        self.assertIn("159518", window.pcf_dialogs[0].windowTitle())
+        window.pcf_dialogs[0].close()
+        window.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
