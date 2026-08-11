@@ -10,6 +10,7 @@
   },
   "schedule": {
     "enabled": true,
+    "policy_version": 3,
     "timezone": "Asia/Shanghai",
     "weekdays": [
       0,
@@ -18,14 +19,15 @@
       3,
       4
     ],
-    "start": "09:15",
-    "stop": "15:10"
+    "start": "09:10",
+    "stop": "15:00"
   },
   "pcf": {
     "enabled": true,
+    "policy_version": 2,
     "timezone": "Asia/Shanghai",
     "weekdays": [0, 1, 2, 3, 4],
-    "fetch_start": "08:00",
+    "fetch_start": "08:30",
     "fetch_end": "23:00",
     "retry_interval_seconds": 900,
     "max_auto_attempts_per_symbol_per_day": 8,

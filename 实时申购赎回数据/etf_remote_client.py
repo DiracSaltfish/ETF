@@ -50,7 +50,7 @@ from PyQt6.QtWidgets import (
 
 
 PRESET_SOUNDS = (
-    ("bright", "清亮三音", "bright.wav"),
+    ("bright", "轻亮三音", "bright.wav"),
     ("radar", "雷达脉冲", "radar.wav"),
     ("bell", "双音铃声", "bell.wav"),
     ("urgent", "紧急三连音", "urgent.wav"),
@@ -266,6 +266,15 @@ class ClientSettingsDialog(QDialog):
         self.sound_combo.setCurrentIndex(max(0, selected))
         alert_form.addRow("提示音", self.sound_combo)
 
+        self.sound_repeat_input = QSpinBox()
+        self.sound_repeat_input.setRange(1, 10)
+        self.sound_repeat_input.setSuffix(" 次")
+        self.sound_repeat_input.setValue(int(values["sound_repeat_count"]))
+        self.sound_repeat_input.setToolTip(
+            "每次变化提醒完整播放该段音频的次数；清亮三音默认 3 次，共 9 响。"
+        )
+        alert_form.addRow("重复播放", self.sound_repeat_input)
+
         external_row = QHBoxLayout()
         self.external_input = QLineEdit(str(values["external_sound_path"]))
         self.external_input.setPlaceholderText("选择 WAV、MP3、M4A、FLAC 等音频")
@@ -335,6 +344,7 @@ class ClientSettingsDialog(QDialog):
             str(self.sound_combo.currentData()),
             self.external_input.text().strip(),
             self.volume_slider.value(),
+            self.sound_repeat_input.value(),
             True,
         )
 
@@ -349,6 +359,7 @@ class ClientSettingsDialog(QDialog):
             "sound": self.sound_check.isChecked(),
             "sound_id": str(self.sound_combo.currentData()),
             "external_sound_path": self.external_input.text().strip(),
+            "sound_repeat_count": self.sound_repeat_input.value(),
             "volume": self.volume_slider.value(),
             "popup_duration_seconds": self.popup_duration_input.value(),
             "alert_cooldown_seconds": self.cooldown_input.value(),
@@ -363,11 +374,13 @@ class RemoteClientWindow(QMainWindow):
         window_title: str = "ETF 远程监控",
         default_address: str = "127.0.0.1:6787",
         server_editable: bool = True,
+        server_controls: bool = False,
     ) -> None:
         super().__init__()
         self.settings = QSettings("ETFDelivery", settings_name)
         self.default_address = default_address
         self.server_editable = server_editable
+        self.server_controls = server_controls
         self.socket = QWebSocket()
         self.network = QNetworkAccessManager(self)
         self.want_connection = False
@@ -451,17 +464,24 @@ class RemoteClientWindow(QMainWindow):
         self.popup_check.setChecked(True)
         self.sound_check.setChecked(True)
         buttons = QHBoxLayout()
-        for widget in (
-            self.connect_button,
-            self.pull_button,
-            self.pcf_refresh_button,
-            self.remote_start_button,
-            self.remote_stop_button,
-            self.settings_button,
-            self.reset_baseline_button,
-            self.popup_check,
-            self.sound_check,
-        ):
+        toolbar_widgets = [self.connect_button, self.pull_button]
+        if self.server_controls:
+            toolbar_widgets.extend(
+                [
+                    self.pcf_refresh_button,
+                    self.remote_start_button,
+                    self.remote_stop_button,
+                ]
+            )
+        toolbar_widgets.extend(
+            [
+                self.settings_button,
+                self.reset_baseline_button,
+                self.popup_check,
+                self.sound_check,
+            ]
+        )
+        for widget in toolbar_widgets:
             buttons.addWidget(widget)
         buttons.addStretch()
         grid.addLayout(buttons, 1, 0, 1, 2)
@@ -480,9 +500,14 @@ class RemoteClientWindow(QMainWindow):
         self.add_symbol_button.clicked.connect(self.add_remote_symbol)
         self.remove_symbol_button = QPushButton("删除选中")
         self.remove_symbol_button.clicked.connect(self.remove_remote_selected)
-        watch_layout.addWidget(self.symbol_input)
-        watch_layout.addWidget(self.add_symbol_button)
-        watch_layout.addWidget(self.remove_symbol_button)
+        if self.server_controls:
+            watch_layout.addWidget(self.symbol_input)
+            watch_layout.addWidget(self.add_symbol_button)
+            watch_layout.addWidget(self.remove_symbol_button)
+        else:
+            managed_note = QLabel("观察列表由 Mac-home 主机管理")
+            managed_note.setObjectName("detail")
+            watch_layout.addWidget(managed_note)
         watch_layout.addStretch()
         self.connection_label = QLabel("● 未连接")
         watch_layout.addWidget(self.connection_label)
@@ -583,6 +608,9 @@ class RemoteClientWindow(QMainWindow):
         self.sound_enabled = setting_bool(self.settings, "sound", True)
         self.sound_id = str(self.settings.value("sound_id", "bright"))
         self.external_sound_path = str(self.settings.value("external_sound_path", ""))
+        self.sound_repeat_count = max(
+            1, min(10, int(self.settings.value("sound_repeat_count", 3)))
+        )
         self.alert_volume = int(self.settings.value("volume", 75))
         self.popup_duration_seconds = int(
             self.settings.value("popup_duration_seconds", 12)
@@ -618,6 +646,7 @@ class RemoteClientWindow(QMainWindow):
             "sound": self.sound_enabled,
             "sound_id": self.sound_id,
             "external_sound_path": self.external_sound_path,
+            "sound_repeat_count": self.sound_repeat_count,
             "volume": self.alert_volume,
             "popup_duration_seconds": self.popup_duration_seconds,
             "alert_cooldown_seconds": self.alert_cooldown_seconds,
@@ -644,6 +673,7 @@ class RemoteClientWindow(QMainWindow):
         self.sound_enabled = values["sound"]
         self.sound_id = values["sound_id"]
         self.external_sound_path = values["external_sound_path"]
+        self.sound_repeat_count = values["sound_repeat_count"]
         self.alert_volume = values["volume"]
         self.popup_duration_seconds = values["popup_duration_seconds"]
         self.alert_cooldown_seconds = values["alert_cooldown_seconds"]
@@ -672,6 +702,7 @@ class RemoteClientWindow(QMainWindow):
         sound_id: str,
         external_path: str,
         volume: int,
+        repeat_count: int,
         preview: bool = False,
     ) -> bool:
         path = self._sound_path(sound_id, external_path)
@@ -681,6 +712,7 @@ class RemoteClientWindow(QMainWindow):
             return False
         self.audio_output.setVolume(max(0, min(volume, 100)) / 100.0)
         self.audio_player.stop()
+        self.audio_player.setLoops(max(1, min(int(repeat_count), 10)))
         self.audio_player.setSource(QUrl.fromLocalFile(str(path.resolve())))
         self.audio_player.play()
         return True
@@ -690,6 +722,7 @@ class RemoteClientWindow(QMainWindow):
             self.sound_id,
             self.external_sound_path,
             self.alert_volume,
+            self.sound_repeat_count,
             preview,
         )
 

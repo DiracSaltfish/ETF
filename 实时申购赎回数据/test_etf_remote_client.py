@@ -94,8 +94,21 @@ class RemoteClientTest(unittest.TestCase):
         for filename in ("bright.wav", "radar.wav", "bell.wav", "urgent.wav", "soft.wav"):
             self.assertTrue(resource_path("assets", "sounds", filename).is_file())
 
+        window = RemoteClientWindow(settings_name="TestSoundRepeatSetting")
+        window.settings.remove("sound_repeat_count")
+        window._restore_settings()
+        self.assertEqual(window.sound_repeat_count, 3)
+        self.assertEqual(window._settings_values()["sound_repeat_count"], 3)
+        window.close()
+
     def test_connection_button_uses_manual_red_and_connected_green_states(self) -> None:
         window = RemoteClientWindow(settings_name="TestConnectionButton")
+        self.assertFalse(window.server_controls)
+        self.assertIsNone(window.remote_start_button.parent())
+        self.assertIsNone(window.remote_stop_button.parent())
+        self.assertIsNone(window.pcf_refresh_button.parent())
+        self.assertIsNone(window.add_symbol_button.parent())
+        self.assertIsNone(window.remove_symbol_button.parent())
         self.assertFalse(window.auto_connect_enabled)
         self.assertEqual(window.connect_button.property("connection_state"), "disconnected")
         self.assertIn("#c53b45", window.connect_button.styleSheet())

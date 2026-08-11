@@ -106,6 +106,9 @@ class ProbeError(RuntimeError):
 
 
 class ProbeController:
+    LLDB_DLOPEN_FAILED = -9001
+    LLDB_DLSYM_FAILED = -9002
+
     def build_probe(self) -> None:
         if not PROBE_SOURCE.exists():
             raise ProbeError(f"找不到探针源码：{PROBE_SOURCE}")
@@ -201,6 +204,57 @@ class ProbeController:
             raise ProbeError(f"lldb 未确认 detach：\n{output.strip()}")
         return output
 
+    @classmethod
+    def _checked_call_commands(
+        cls,
+        *,
+        index: int,
+        dylib_path: Path,
+        function_name: str,
+        call_expression: str,
+    ) -> list[str]:
+        """Build an LLDB call that never invokes a null function pointer."""
+
+        handle = f"$tb_handle_{index}"
+        error = f"$tb_error_{index}"
+        function = f"$tb_function_{index}"
+        result = f"$tb_result_{index}"
+        return [
+            f'expr -- void *{handle} = (void *)dlopen("{dylib_path}", 0x6)',
+            (
+                f"expr -- const char *{error} = {handle} ? "
+                "(const char *)0 : (const char *)dlerror()"
+            ),
+            (
+                f'expr -- void *{function} = {handle} ? (void *)dlsym('
+                f'{handle}, "{function_name}") : (void *)0'
+            ),
+            (
+                f"expr -- long long {result} = {function} ? "
+                f"(long long)({call_expression}) : "
+                f"({handle} ? {cls.LLDB_DLSYM_FAILED} : {cls.LLDB_DLOPEN_FAILED})"
+            ),
+            f"frame variable {error} {result}",
+        ]
+
+    @classmethod
+    def _checked_call_result(cls, output: str, index: int) -> int:
+        result_match = re.search(
+            rf"\$tb_result_{index}\s*=\s*(-?\d+)", output
+        )
+        if result_match is None:
+            raise ProbeError(f"LLDB 未返回探针调用结果：\n{output.strip()}")
+        result = int(result_match.group(1))
+        if result == cls.LLDB_DLOPEN_FAILED:
+            error_match = re.search(
+                rf'\$tb_error_{index}\s*=.*?"([^"]+)"', output
+            )
+            detail = error_match.group(1) if error_match else "未知加载错误"
+            raise ProbeError(f"探针 dylib 加载失败：{detail}")
+        if result == cls.LLDB_DLSYM_FAILED:
+            raise ProbeError("探针已加载，但找不到订阅函数。")
+        return result
+
     @staticmethod
     def _wait_for_status(symbol: str, newer_than_ns: int) -> dict[str, Any]:
         path = live_status_path(symbol)
@@ -225,16 +279,18 @@ class ProbeController:
         previous_mtime = status_path.stat().st_mtime_ns if status_path.exists() else 0
         dylib_text = str(dylib_path)
 
-        commands = [
-            f'expr -- void *$tb_handle = (void *)dlopen("{dylib_text}", 0x6)',
-            (
-                "expr -- (long long)((long long (*)(const char *, int))"
-                "dlsym($tb_handle, \"wind_tbapi_subscribe\"))"
+        commands = self._checked_call_commands(
+            index=0,
+            dylib_path=Path(dylib_text),
+            function_name="wind_tbapi_subscribe",
+            call_expression=(
+                "((long long (*)(const char *, int))$tb_function_0)"
                 f'(\"{symbol}\", {latency_ms})'
             ),
-            "process detach",
-        ]
-        self._run_lldb(pid, commands)
+        )
+        commands.append("process detach")
+        output = self._run_lldb(pid, commands)
+        self._checked_call_result(output, 0)
         status = self._wait_for_status(symbol, previous_mtime)
         sub_id = int(status.get("code", -1))
         if status.get("status") != "subscribed" or sub_id < 0:
@@ -249,15 +305,15 @@ class ProbeController:
         if current_pid != session.pid:
             return
         path_text = str(session.dylib_path)
-        commands = [
-            f'expr -- void *$tb_handle = (void *)dlopen("{path_text}", 0x6)',
-            (
-                "expr -- (long long)((long long (*)(void))"
-                "dlsym($tb_handle, \"wind_tbapi_stop\"))()"
-            ),
-            "process detach",
-        ]
-        self._run_lldb(session.pid, commands)
+        commands = self._checked_call_commands(
+            index=0,
+            dylib_path=Path(path_text),
+            function_name="wind_tbapi_stop",
+            call_expression="((long long (*)(void))$tb_function_0)()",
+        )
+        commands.append("process detach")
+        output = self._run_lldb(session.pid, commands)
+        self._checked_call_result(output, 0)
 
     def subscribe_many(
         self, symbols: list[str], latency_ms: int
@@ -280,19 +336,19 @@ class ProbeController:
                 status_path.stat().st_mtime_ns if status_path.exists() else 0
             )
             plans.append((symbol, dylib_path, previous_mtime))
-            handle = f"$tb_handle_{index}"
             commands.extend(
-                [
-                    f'expr -- void *{handle} = (void *)dlopen("{dylib_path}", 0x6)',
-                    (
-                        "expr -- (long long)((long long (*)(const char *, int))"
-                        f"dlsym({handle}, \"wind_tbapi_subscribe\"))"
+                self._checked_call_commands(
+                    index=index,
+                    dylib_path=dylib_path,
+                    function_name="wind_tbapi_subscribe",
+                    call_expression=(
+                        f"((long long (*)(const char *, int))$tb_function_{index})"
                         f'(\"{symbol}\", {latency_ms})'
                     ),
-                ]
+                )
             )
         commands.append("process detach")
-        self._run_lldb(
+        output = self._run_lldb(
             pid,
             commands,
             timeout_seconds=max(45, 20 + len(unique_symbols) * 10),
@@ -300,8 +356,9 @@ class ProbeController:
 
         sessions: dict[str, SubscriptionSession] = {}
         errors: dict[str, str] = {}
-        for symbol, dylib_path, previous_mtime in plans:
+        for index, (symbol, dylib_path, previous_mtime) in enumerate(plans):
             try:
+                self._checked_call_result(output, index)
                 status = self._wait_for_status(symbol, previous_mtime)
                 sub_id = int(status.get("code", -1))
                 if status.get("status") != "subscribed" or sub_id < 0:
@@ -330,24 +387,30 @@ class ProbeController:
 
         commands: list[str] = []
         for index, session in enumerate(active):
-            handle = f"$tb_stop_handle_{index}"
             commands.extend(
-                [
-                    f'expr -- void *{handle} = (void *)dlopen("{session.dylib_path}", 0x6)',
-                    (
-                        "expr -- (long long)((long long (*)(void))"
-                        f"dlsym({handle}, \"wind_tbapi_stop\"))()"
+                self._checked_call_commands(
+                    index=index,
+                    dylib_path=session.dylib_path,
+                    function_name="wind_tbapi_stop",
+                    call_expression=(
+                        f"((long long (*)(void))$tb_function_{index})()"
                     ),
-                ]
+                )
             )
         commands.append("process detach")
         try:
-            self._run_lldb(
+            output = self._run_lldb(
                 current_pid,
                 commands,
                 timeout_seconds=max(45, 20 + len(active) * 8),
             )
-            return {}
+            errors: dict[str, str] = {}
+            for index, session in enumerate(active):
+                try:
+                    self._checked_call_result(output, index)
+                except Exception as exc:
+                    errors[session.symbol] = str(exc)
+            return errors
         except Exception as exc:
             return {session.symbol: str(exc) for session in active}
 

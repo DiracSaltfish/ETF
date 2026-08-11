@@ -166,6 +166,7 @@ class MacHomeWindow(RemoteClientWindow):
             window_title="ETF 监控主机",
             default_address="127.0.0.1:6787",
             server_editable=False,
+            server_controls=True,
         )
         self.config_path = config_path
         self.server_thread: EmbeddedServerThread | None = None

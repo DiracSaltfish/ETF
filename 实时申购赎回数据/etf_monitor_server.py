@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -107,16 +108,18 @@ class ConfigStore:
             },
             "schedule": {
                 "enabled": True,
+                "policy_version": 3,
                 "timezone": "Asia/Shanghai",
                 "weekdays": [0, 1, 2, 3, 4],
-                "start": "09:15",
-                "stop": "15:10",
+                "start": "09:10",
+                "stop": "15:00",
             },
             "pcf": {
                 "enabled": True,
+                "policy_version": 2,
                 "timezone": "Asia/Shanghai",
                 "weekdays": [0, 1, 2, 3, 4],
-                "fetch_start": "08:00",
+                "fetch_start": "08:30",
                 "fetch_end": "23:00",
                 "retry_interval_seconds": 900,
                 "max_auto_attempts_per_symbol_per_day": 8,
@@ -134,6 +137,21 @@ class ConfigStore:
                 if not isinstance(loaded, dict):
                     raise ValueError("配置根节点必须是对象")
                 data = self._merge(defaults, loaded)
+                loaded_schedule = loaded.get("schedule")
+                if not isinstance(loaded_schedule, dict):
+                    loaded_schedule = {}
+                if int(loaded_schedule.get("policy_version", 1)) < 3:
+                    # One-time migration from the former 09:15-15:10 policy.
+                    # The host owns collection; remote clients are read-only.
+                    data["schedule"]["start"] = "09:10"
+                    data["schedule"]["stop"] = "15:00"
+                    data["schedule"]["policy_version"] = 3
+                loaded_pcf = loaded.get("pcf")
+                if not isinstance(loaded_pcf, dict):
+                    loaded_pcf = {}
+                if int(loaded_pcf.get("policy_version", 1)) < 2:
+                    data["pcf"]["fetch_start"] = "08:30"
+                    data["pcf"]["policy_version"] = 2
             except (OSError, ValueError, json.JSONDecodeError):
                 backup = self.path.with_suffix(
                     self.path.suffix + f".invalid-{int(time.time())}"
@@ -259,6 +277,8 @@ class ConnectionManager:
 
 
 class MonitorEngine:
+    CAPTURE_READ_TIMEOUT_SECONDS = 2.0
+
     def __init__(
         self,
         config: ConfigStore,
@@ -296,6 +316,9 @@ class MonitorEngine:
         self.pcf_lock = asyncio.Lock()
         self.pcf_last_attempt: dict[str, float] = {}
         self.pcf_attempt_counts: dict[tuple[date, str], int] = {}
+        self.capture_read_tasks: dict[
+            str, asyncio.Task[tuple[dict[str, Any], float]]
+        ] = {}
         self.tasks: list[asyncio.Task[Any]] = []
         self.shutting_down = False
 
@@ -340,7 +363,14 @@ class MonitorEngine:
         self.shutting_down = True
         for task in self.tasks:
             task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        for task in self.capture_read_tasks.values():
+            task.cancel()
+        await asyncio.gather(
+            *self.tasks,
+            *self.capture_read_tasks.values(),
+            return_exceptions=True,
+        )
+        self.capture_read_tasks.clear()
         if self.sessions:
             await self.stop_monitoring("shutdown")
 
@@ -491,6 +521,33 @@ class MonitorEngine:
                 continue
         raise ProbeError(f"尚无 {display_symbol(symbol)} 数据")
 
+    async def _read_capture_async(
+        self, symbol: str
+    ) -> tuple[dict[str, Any], float]:
+        """Read one symbol without allowing macOS TCC to stall the API."""
+
+        task = self.capture_read_tasks.get(symbol)
+        if task is None:
+            task = asyncio.create_task(
+                asyncio.to_thread(self._read_capture, symbol),
+                name=f"capture-read-{symbol}",
+            )
+            self.capture_read_tasks[symbol] = task
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=self.CAPTURE_READ_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            self.last_error = (
+                "Wind 数据目录读取超时。请在 macOS“系统设置 → "
+                "隐私与安全性 → 完全磁盘访问权限”中允许 ETF监控主机。"
+            )
+            raise ProbeError(self.last_error) from exc
+        finally:
+            if task.done():
+                self.capture_read_tasks.pop(symbol, None)
+
     @staticmethod
     def _change_details(
         previous: dict[str, Any], current: dict[str, Any]
@@ -515,18 +572,16 @@ class MonitorEngine:
 
     async def poll_once(self) -> list[dict[str, Any]]:
         change_items: list[dict[str, Any]] = []
-        for symbol in self.config.symbols:
+        symbols = list(self.config.symbols)
+        read_results = await asyncio.gather(
+            *(self._read_capture_async(symbol) for symbol in symbols),
+            return_exceptions=True,
+        )
+        for symbol, read_result in zip(symbols, read_results):
             state = self.states.setdefault(symbol, SymbolState(symbol))
-            try:
-                # macOS may block an `opendir` call while evaluating Full Disk
-                # Access for Wind's sandbox.  Never perform that filesystem
-                # access on uvicorn's event loop, otherwise the HTTP/WebSocket
-                # server cannot finish starting.
-                values, timestamp = await asyncio.to_thread(
-                    self._read_capture, symbol
-                )
-            except ProbeError:
+            if isinstance(read_result, BaseException):
                 continue
+            values, timestamp = read_result
             current = {
                 "etfbuynumber": values.get("etfbuynumber"),
                 "etfbuyamount": values.get("etfbuyamount"),
@@ -536,18 +591,25 @@ class MonitorEngine:
             }
             previous = self.baselines.get(symbol)
             state.values = current
-            state.opportunity = classify_intraday_opportunity(
-                previous, current, state.pcf
-            )
             state.updated_at = timestamp
             if state.status in {"waiting", "stopped"} and not self.monitoring:
                 state.status = "cached"
             self.baselines[symbol] = current
             if previous is None:
+                state.opportunity = classify_intraday_opportunity(
+                    None, current, state.pcf
+                )
                 continue
             changes = self._change_details(previous, current)
             if not changes:
+                # Opportunity is an event-derived state.  A quiet polling
+                # cycle must not erase the latest intraday signal; clients
+                # keep that signal visible until a later share change or
+                # their own baseline reset.
                 continue
+            state.opportunity = classify_intraday_opportunity(
+                previous, current, state.pcf
+            )
             state.last_change_at = now_iso()
             state.last_change = changes
             change_items.append(
@@ -618,17 +680,20 @@ class MonitorEngine:
         await self.manager.broadcast(event)
         return event
 
-    async def pcf_detail(self, symbol: str) -> dict[str, Any]:
+    async def pcf_detail(
+        self, symbol: str, *, allow_refresh: bool = False
+    ) -> dict[str, Any]:
         normalized = normalize_symbol(symbol)
         if normalized not in self.config.symbols:
             raise ValueError("该标的不在观察列表中")
         today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
         detail = self.pcf_service.detail_for(normalized)
-        if (
+        needs_refresh = (
             detail is None
             or detail.get("trading_day") != today.isoformat()
             or detail.get("status") != "ready"
-        ):
+        )
+        if needs_refresh and allow_refresh:
             await self.refresh_pcf([normalized])
             detail = self.pcf_service.detail_for(normalized)
         if detail is None:
@@ -640,6 +705,13 @@ class MonitorEngine:
         )
         return result
 
+    @staticmethod
+    def _pcf_auto_fetch_start(pcf: dict[str, Any]) -> datetime_time:
+        configured_start = datetime_time.fromisoformat(
+            str(pcf.get("fetch_start", "08:30"))
+        )
+        return max(configured_start, datetime_time(8, 30))
+
     def _inside_pcf_window(self) -> bool:
         pcf = self.config.data.get("pcf", {})
         if not pcf.get("enabled", True):
@@ -648,7 +720,10 @@ class MonitorEngine:
         now = datetime.now(timezone)
         if now.weekday() not in pcf.get("weekdays", [0, 1, 2, 3, 4]):
             return False
-        start = datetime_time.fromisoformat(str(pcf.get("fetch_start", "08:00")))
+        # SZSE does not reliably publish the current trading day's PCF before
+        # 08:30.  Keep this floor even for installations carrying the legacy
+        # 08:00 setting; later user-configured starts are still respected.
+        start = self._pcf_auto_fetch_start(pcf)
         end = datetime_time.fromisoformat(str(pcf.get("fetch_end", "23:00")))
         return start <= now.time().replace(tzinfo=None) <= end
 
@@ -705,9 +780,20 @@ class MonitorEngine:
         now = datetime.now(timezone)
         if now.weekday() not in schedule.get("weekdays", [0, 1, 2, 3, 4]):
             return False
-        start = datetime_time.fromisoformat(str(schedule.get("start", "09:15")))
-        stop = datetime_time.fromisoformat(str(schedule.get("stop", "15:10")))
-        return start <= now.time().replace(tzinfo=None) <= stop
+        start = datetime_time.fromisoformat(str(schedule.get("start", "09:10")))
+        stop = datetime_time.fromisoformat(str(schedule.get("stop", "15:00")))
+        return start <= now.time().replace(tzinfo=None) < stop
+
+    def _past_schedule_stop(self) -> bool:
+        schedule = self.config.data["schedule"]
+        if not schedule.get("enabled", True):
+            return False
+        timezone = ZoneInfo(str(schedule.get("timezone", "Asia/Shanghai")))
+        now = datetime.now(timezone)
+        if now.weekday() not in schedule.get("weekdays", [0, 1, 2, 3, 4]):
+            return False
+        stop = datetime_time.fromisoformat(str(schedule.get("stop", "15:00")))
+        return now.time().replace(tzinfo=None) >= stop
 
     async def _schedule_loop(self) -> None:
         while True:
@@ -737,11 +823,7 @@ class MonitorEngine:
                         await self.start_monitoring("schedule")
                     except Exception as exc:
                         LOGGER.warning("scheduled subscription retry failed: %s", exc)
-                elif (
-                    not inside
-                    and self.monitoring
-                    and self.started_by == "schedule"
-                ):
+                elif self._past_schedule_stop() and self.monitoring:
                     await self.stop_monitoring("schedule-end")
             except asyncio.CancelledError:
                 raise
@@ -764,6 +846,21 @@ class MonitorEngine:
 
 class WatchlistRequest(BaseModel):
     symbols: list[str] = Field(min_length=1, max_length=200)
+
+
+def require_loopback(request: Request) -> None:
+    """Reject data-source mutations coming from LAN clients."""
+
+    host = request.client.host if request.client is not None else ""
+    try:
+        allowed = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        allowed = host == "localhost"
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="该操作只允许在 Mac-home 主机本机执行。",
+        )
 
 
 def create_app(
@@ -824,22 +921,27 @@ def create_app(
         return {"symbols": [display_symbol(s) for s in config.symbols]}
 
     @app.put("/api/v1/watchlist")
-    async def set_watchlist(body: WatchlistRequest) -> dict[str, Any]:
+    async def set_watchlist(
+        body: WatchlistRequest, request: Request
+    ) -> dict[str, Any]:
+        require_loopback(request)
         try:
             return await engine.update_watchlist(body.symbols)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/v1/monitor/start")
-    async def start_monitor() -> dict[str, Any]:
+    async def start_monitor(request: Request) -> dict[str, Any]:
+        require_loopback(request)
         try:
-            return await engine.start_monitoring("remote")
+            return await engine.start_monitoring("local-manual")
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/api/v1/monitor/stop")
-    async def stop_monitor() -> dict[str, Any]:
-        return await engine.stop_monitoring("remote")
+    async def stop_monitor(request: Request) -> dict[str, Any]:
+        require_loopback(request)
+        return await engine.stop_monitoring("local-manual")
 
     @app.get("/api/v1/pcf")
     async def pcf_summaries() -> dict[str, Any]:
@@ -851,14 +953,20 @@ def create_app(
         }
 
     @app.get("/api/v1/pcf/{symbol}")
-    async def pcf_detail(symbol: str) -> dict[str, Any]:
+    async def pcf_detail(symbol: str, request: Request) -> dict[str, Any]:
         try:
-            return await engine.pcf_detail(symbol)
+            host = request.client.host if request.client is not None else ""
+            try:
+                allow_refresh = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                allow_refresh = host == "localhost"
+            return await engine.pcf_detail(symbol, allow_refresh=allow_refresh)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/v1/pcf/refresh")
-    async def refresh_pcf() -> dict[str, Any]:
+    async def refresh_pcf(request: Request) -> dict[str, Any]:
+        require_loopback(request)
         return await engine.refresh_pcf()
 
     @app.websocket("/ws/v1/changes")

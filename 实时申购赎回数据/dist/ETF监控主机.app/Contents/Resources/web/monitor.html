@@ -62,20 +62,17 @@
 <div id="toasts" class="toast-area"></div>
 <main>
   <section class="card toolbar">
-    <button id="start" class="primary">开始监控</button>
-    <button id="stop">停止监控</button>
-    <button id="pull">拉取当前全量</button>
-    <button id="refreshPcf">刷新 PCF</button>
+    <button id="pull" class="primary">拉取当前全量</button>
     <button id="sound">启用声音</button>
+    <label for="soundRepeat">重复</label>
+    <input id="soundRepeat" type="number" min="1" max="10" value="3" style="min-width:74px;width:74px" title="轻亮三音每次含 3 响，默认重复 3 次，共 9 响">
     <button id="notify">允许系统通知</button>
     <span class="grow"></span>
     <span id="socketStatus" class="dot offline">连接中</span>
   </section>
 
   <section class="card toolbar">
-    <label for="symbol">深圳代码</label>
-    <input id="symbol" inputmode="numeric" maxlength="6" placeholder="例如 159518">
-    <button id="add">添加</button>
+    <span class="muted">只读客户端 · 观察列表与监控由 Mac-home 主机管理</span>
     <span class="grow"></span>
     <span id="summary" class="muted">等待全量数据</span>
   </section>
@@ -90,7 +87,7 @@
       <tbody id="rows"></tbody>
     </table>
   </section>
-  <div id="footer" class="muted">双击标的可查看 PCF；浏览器首次点击“启用声音”后，变化推送才能播放提示音。</div>
+  <div id="footer" class="muted">连接时自动收到全量快照，之后由 WebSocket 主推变化；双击标的可查看 PCF。</div>
 </main>
 <div id="pcfModal" class="modal" role="dialog" aria-modal="true">
   <div class="modal-card">
@@ -105,7 +102,8 @@
   </div>
 </div>
 <script>
-  const state = { items:new Map(), ws:null, reconnect:null, audio:null, sound:false };
+  const state = { items:new Map(), ws:null, reconnect:null, audio:null, sound:false,
+    soundNodes:[], soundRepeat:Math.max(1,Math.min(10,Number(localStorage.getItem('etfSoundRepeat')||3))) };
   const $ = id => document.getElementById(id);
   const fmt = (v,signed=false) => {
     if (v === null || v === undefined) return '—';
@@ -161,12 +159,21 @@
 
   function beep() {
     if (!state.sound || !state.audio) return;
-    const ctx=state.audio; const oscillator=ctx.createOscillator();
-    const gain=ctx.createGain(); oscillator.frequency.value=880;
-    gain.gain.setValueAtTime(.18,ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.45);
-    oscillator.connect(gain).connect(ctx.destination); oscillator.start();
-    oscillator.stop(ctx.currentTime+.45);
+    state.soundNodes.forEach(node=>{try{node.stop()}catch(_e){}}); state.soundNodes=[];
+    const ctx=state.audio, frequencies=[784,988,1175], tone=.14, gap=.05;
+    for(let repeat=0;repeat<state.soundRepeat;repeat++) {
+      frequencies.forEach((frequency,index)=>{
+        const start=ctx.currentTime+(repeat*frequencies.length+index)*(tone+gap);
+        const oscillator=ctx.createOscillator(), gain=ctx.createGain();
+        oscillator.frequency.value=frequency;
+        gain.gain.setValueAtTime(.0001,start);
+        gain.gain.exponentialRampToValueAtTime(.18,start+.018);
+        gain.gain.exponentialRampToValueAtTime(.0001,start+tone);
+        oscillator.connect(gain).connect(ctx.destination); oscillator.start(start);
+        oscillator.stop(start+tone+.01); state.soundNodes.push(oscillator);
+        oscillator.onended=()=>{state.soundNodes=state.soundNodes.filter(node=>node!==oscillator)};
+      });
+    }
   }
 
   function applyChange(event) {
@@ -226,18 +233,15 @@
   $('pull').onclick=()=>state.ws?.readyState===1
     ?state.ws.send(JSON.stringify({type:'get_snapshot'}))
     :api('/api/v1/snapshot').then(applySnapshot).catch(e=>toast(e.message));
-  $('start').onclick=()=>api('/api/v1/monitor/start','POST').then(applySnapshot).catch(e=>toast(e.message));
-  $('stop').onclick=()=>api('/api/v1/monitor/stop','POST').then(applySnapshot).catch(e=>toast(e.message));
-  $('refreshPcf').onclick=()=>api('/api/v1/pcf/refresh','POST').then(applySnapshot).catch(e=>toast(e.message));
-  $('add').onclick=async()=>{
-    const code=$('symbol').value.trim(); if(!/^\d{6}$/.test(code)) return toast('请输入 6 位深圳代码');
-    const symbols=[...new Set([...state.items.keys(),code])].sort();
-    try { applySnapshot(await api('/api/v1/watchlist','PUT',{symbols})); $('symbol').value=''; }
-    catch(e){toast(e.message)}
-  };
   $('sound').onclick=async()=>{
     state.audio ||= new (window.AudioContext||window.webkitAudioContext)();
     await state.audio.resume(); state.sound=true; $('sound').textContent='声音已启用'; beep();
+  };
+  $('soundRepeat').value=String(state.soundRepeat);
+  $('soundRepeat').onchange=()=>{
+    state.soundRepeat=Math.max(1,Math.min(10,Number($('soundRepeat').value)||3));
+    $('soundRepeat').value=String(state.soundRepeat);
+    localStorage.setItem('etfSoundRepeat',String(state.soundRepeat));
   };
   $('notify').onclick=async()=>{
     if(!('Notification' in window)) return toast('当前浏览器不支持系统通知');
