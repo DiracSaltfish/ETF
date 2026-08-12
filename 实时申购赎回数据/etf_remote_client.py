@@ -87,46 +87,122 @@ def split_address(value: str, default_port: int = 6787) -> tuple[str, int]:
     return host or "127.0.0.1", max(1, min(port, 65535))
 
 
-def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
-    """Classify current net creation usage from the PCF snapshot locally.
+def format_share_value(value: Any, signed: bool = False) -> str:
+    """Format shares in four-digit Chinese units (for example ``100 0000``)."""
 
-    A zero PCF limit is treated as no positive net-creation cap when creation
-    remains open, which matches the Shenzhen PCFs used by this application.
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "—"
+    rounded = int(round(value))
+    digits = str(abs(rounded))
+    groups: list[str] = []
+    while digits:
+        groups.append(digits[-4:])
+        digits = digits[:-4]
+    text = " ".join(reversed(groups)) or "0"
+    if rounded < 0:
+        return f"-{text}"
+    if signed and rounded > 0:
+        return f"+{text}"
+    return text
+
+
+def basket_count(item: dict[str, Any], amount_field: str) -> float | None:
+    """Return an amount's basket count using the current PCF minimum unit."""
+
+    values = item.get("values") or {}
+    pcf = item.get("pcf") or {}
+    amount = values.get(amount_field)
+    unit = pcf.get("creation_redemption_unit")
+    if pcf.get("status") != "ready":
+        return None
+    if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+        return None
+    if not isinstance(unit, (int, float)) or isinstance(unit, bool) or unit <= 0:
+        return None
+    return float(amount) / float(unit)
+
+
+def format_basket_count(value: float | None, signed: bool = False) -> str:
+    if value is None:
+        return "待确认"
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return format_share_value(rounded, signed=signed)
+    text = f"{abs(value):.2f}".rstrip("0").rstrip(".")
+    if value < 0:
+        return f"-{text}"
+    if signed and value > 0:
+        return f"+{text}"
+    return text
+
+
+def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
+    """Classify creation capacity from cumulative and net PCF limits locally.
+
+    A zero limit means that specific constraint is not set.  A positive
+    ``CreationLimit`` is compared with cumulative creation shares, while a
+    positive ``NetCreationLimit`` is compared with the creation/redemption net.
     """
 
     result: dict[str, Any] = {
         "kind": "pending",
         "label": "待确认",
+        "creation_shares": None,
         "net_shares": None,
+        "creation_limit_shares": None,
+        "net_limit_shares": None,
         "limit_shares": None,
         "remaining_shares": None,
         "reason": "等待实时份额和 PCF",
     }
     values = item.get("values") or {}
     pcf = item.get("pcf") or {}
+    creation_shares = values.get("etfbuyamount")
     net_shares = values.get("netamount")
-    if not isinstance(net_shares, (int, float)) or isinstance(net_shares, bool):
-        result["reason"] = "实时轧差份额尚未就绪"
+    if not all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in (creation_shares, net_shares)
+    ):
+        result["reason"] = "实时申购份额或轧差份额尚未就绪"
         return result
+    result["creation_shares"] = creation_shares
     result["net_shares"] = net_shares
     if pcf.get("status") != "ready":
         result["reason"] = "当日 PCF 尚未就绪"
         return result
 
-    limit_shares = pcf.get("net_creation_limit")
-    if not isinstance(limit_shares, (int, float)) or isinstance(limit_shares, bool):
-        result["reason"] = "PCF 缺少净申购上限"
-        return result
-    result["limit_shares"] = limit_shares
+    creation_limit = pcf.get("creation_limit")
+    net_limit = pcf.get("net_creation_limit")
+    creation_limit_valid = isinstance(creation_limit, (int, float)) and not isinstance(
+        creation_limit, bool
+    )
+    net_limit_valid = isinstance(net_limit, (int, float)) and not isinstance(
+        net_limit, bool
+    )
+    result["creation_limit_shares"] = creation_limit if creation_limit_valid else None
+    result["net_limit_shares"] = net_limit if net_limit_valid else None
 
-    if limit_shares > 0 and float(net_shares) >= float(limit_shares):
+    if creation_limit_valid and creation_limit > 0 and creation_shares >= creation_limit:
         result.update(
             kind="full",
             label="已满",
+            limit_shares=creation_limit,
             remaining_shares=0,
             reason=(
-                f"当前净申购 {net_shares:,.0f}，已达到 PCF 上限 "
-                f"{limit_shares:,.0f}"
+                f"当前累计申购 {format_share_value(creation_shares)}，"
+                f"已达到 PCF 累计上限 {format_share_value(creation_limit)}"
+            ),
+        )
+        return result
+    if net_limit_valid and net_limit > 0 and net_shares >= net_limit:
+        result.update(
+            kind="full",
+            label="已满",
+            limit_shares=net_limit,
+            remaining_shares=0,
+            reason=(
+                f"当前净申购 {format_share_value(net_shares)}，"
+                f"已达到 PCF 净申购上限 {format_share_value(net_limit)}"
             ),
         )
         return result
@@ -137,22 +213,32 @@ def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
             reason="PCF 明确关闭申购",
         )
         return result
-    if limit_shares <= 0:
+    if not creation_limit_valid or not net_limit_valid:
+        result["reason"] = "PCF 的累计或净申购上限字段不完整"
+        return result
+
+    constraints: list[tuple[str, float]] = []
+    if creation_limit > 0:
+        constraints.append(("累计", max(0.0, float(creation_limit) - float(creation_shares))))
+    if net_limit > 0:
+        constraints.append(("净申购", max(0.0, float(net_limit) - float(net_shares))))
+    if not constraints:
         result.update(
             kind="available",
             label="未满",
-            reason="PCF 未设置正数净申购上限",
+            reason="PCF 未设置正数累计申购或净申购上限",
         )
         return result
 
-    remaining = max(0.0, float(limit_shares) - float(net_shares))
+    binding_name, remaining = min(constraints, key=lambda constraint: constraint[1])
     result.update(
         kind="available",
         label="未满",
         remaining_shares=remaining,
         reason=(
-            f"当前净申购 {net_shares:,.0f} / PCF 上限 {limit_shares:,.0f}，"
-            f"剩余 {remaining:,.0f}"
+            f"累计申购 {format_share_value(creation_shares)}，"
+            f"净申购 {format_share_value(net_shares)}；"
+            f"距离 PCF {binding_name}限额还剩 {format_share_value(remaining)}"
         ),
     )
     return result
@@ -211,15 +297,24 @@ class ChangeBanner(QFrame):
 
 
 class PcfDetailDialog(QDialog):
-    def __init__(self, payload: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        parent: QWidget | None = None,
+        *,
+        name_save_callback: Any | None = None,
+    ) -> None:
         super().__init__(parent)
         symbol = str(payload.get("symbol") or "")
+        self.symbol = symbol
+        self.name_save_callback = name_save_callback
         self.setWindowTitle(f"{symbol} PCF 详细信息")
         self.resize(1120, 720)
         layout = QVBoxLayout(self)
 
         heading = QLabel(
-            f"{symbol}  {payload.get('fund_name') or ''}  ·  PCF {payload.get('trading_day') or '—'}"
+            f"{symbol}  {payload.get('name') or payload.get('fund_name') or ''}  ·  "
+            f"PCF {payload.get('trading_day') or '—'}"
         )
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #172033;")
         opportunity = payload.get("opportunity") or {}
@@ -234,6 +329,18 @@ class PcfDetailDialog(QDialog):
         )
         layout.addWidget(heading)
         layout.addWidget(signal)
+
+        if self.name_save_callback is not None:
+            name_row = QHBoxLayout()
+            name_row.addWidget(QLabel("自定义名称"))
+            self.name_input = QLineEdit(str(payload.get("custom_name") or ""))
+            self.name_input.setPlaceholderText("例如：日经套利；留空恢复 PCF 名称")
+            self.name_input.setMaxLength(40)
+            self.name_save_button = QPushButton("保存名称")
+            self.name_save_button.clicked.connect(self._save_name)
+            name_row.addWidget(self.name_input, 1)
+            name_row.addWidget(self.name_save_button)
+            layout.addLayout(name_row)
 
         tabs = QTabWidget()
         summary = payload.get("summary_fields") or []
@@ -272,6 +379,13 @@ class PcfDetailDialog(QDialog):
         close_button = QPushButton("关闭")
         close_button.clicked.connect(self.close)
         layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+
+    def _save_name(self) -> None:
+        if self.name_save_callback is None:
+            return
+        self.name_save_callback(self.symbol, self.name_input.text())
+        self.name_save_button.setText("已提交")
+        self.name_save_button.setEnabled(False)
 
 
 class ClientSettingsDialog(QDialog):
@@ -470,7 +584,7 @@ class RemoteClientWindow(QMainWindow):
         self.audio_player.setAudioOutput(self.audio_output)
 
         self.setWindowTitle(window_title)
-        self.resize(1160, 680)
+        self.resize(1280, 680)
         self._build_ui()
         self._apply_style()
         self._restore_settings()
@@ -500,11 +614,13 @@ class RemoteClientWindow(QMainWindow):
         grid = QGridLayout(connection)
         grid.setContentsMargins(16, 14, 16, 14)
         grid.setHorizontalSpacing(10)
-        grid.addWidget(QLabel("主机地址"), 0, 0)
+        # The endpoint is configured in Settings.  Keep a hidden state widget
+        # for backwards-compatible connection helpers, but do not spend home
+        # screen space on a duplicate editable address.
         self.address_input = QLineEdit()
         self.address_input.setPlaceholderText("例如 192.168.1.20:6787")
         self.address_input.returnPressed.connect(self.connect_server)
-        grid.addWidget(self.address_input, 0, 1)
+        self.address_input.hide()
 
         self.connect_button = QPushButton()
         self.connect_button.setObjectName("connectionButton")
@@ -559,11 +675,12 @@ class RemoteClientWindow(QMainWindow):
         for widget in toolbar_widgets:
             buttons.addWidget(widget)
         buttons.addStretch()
-        grid.addLayout(buttons, 1, 0, 1, 2)
+        grid.addLayout(buttons, 0, 0)
         layout.addWidget(connection)
 
         watchlist = QFrame()
         watchlist.setObjectName("card")
+        self.watchlist_card = watchlist
         watch_layout = QHBoxLayout(watchlist)
         watch_layout.setContentsMargins(16, 10, 16, 10)
         self.watchlist_label = QLabel("观察列表")
@@ -579,27 +696,28 @@ class RemoteClientWindow(QMainWindow):
             watch_layout.addWidget(self.symbol_input)
             watch_layout.addWidget(self.add_symbol_button)
             watch_layout.addWidget(self.remove_symbol_button)
-        else:
-            managed_note = QLabel("观察列表由 Mac-home 主机管理")
-            managed_note.setObjectName("detail")
-            watch_layout.addWidget(managed_note)
         watch_layout.addStretch()
         self.connection_label = QLabel("● 未连接")
         watch_layout.addWidget(self.connection_label)
-        layout.addWidget(watchlist)
+        if self.server_controls:
+            layout.addWidget(watchlist)
+        else:
+            watchlist.hide()
 
-        self.table = QTableWidget(0, 11)
+        self.table = QTableWidget(0, 13)
         self.table.setObjectName("monitorTable")
         self.table.setHorizontalHeaderLabels(
             [
                 "标的",
+                "名称",
                 "主机状态",
-                "申购笔数",
                 "申购份额",
-                "赎回笔数",
                 "赎回份额",
                 "轧差份额",
-                "净申购额度",
+                "申购篮子",
+                "赎回篮子",
+                "轧差篮子",
+                "申购额度",
                 "机会判断",
                 "更新时间",
                 "最近变化",
@@ -612,7 +730,7 @@ class RemoteClientWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(10, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(12, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
 
         self.footer_label = QLabel("WebSocket 等待连接")
@@ -937,7 +1055,9 @@ class RemoteClientWindow(QMainWindow):
                 opportunity = current.get("opportunity") or {}
                 if opportunity.get("label"):
                     details.append(f"机会判断 {opportunity['label']}")
-            messages.append(f"{symbol}：{'；'.join(details)}")
+            name = str(current.get("name") or "").strip() if isinstance(current, dict) else ""
+            identity = f"{symbol}  {name}" if name else symbol
+            messages.append(f"{identity}：{'；'.join(details)}")
         self._rebuild_table()
         if not messages:
             return
@@ -1013,11 +1133,7 @@ class RemoteClientWindow(QMainWindow):
 
     @staticmethod
     def _format(value: Any, signed: bool = False) -> str:
-        if not isinstance(value, (int, float)):
-            return "—"
-        if signed and value > 0:
-            return f"+{value:,.0f}"
-        return f"{value:,.0f}"
+        return format_share_value(value, signed=signed)
 
     @staticmethod
     def _status_text(value: Any) -> str:
@@ -1056,12 +1172,14 @@ class RemoteClientWindow(QMainWindow):
             net_creation_quota = classify_local_net_creation_quota(item)
             row_values = [
                 symbol,
+                item.get("name") or "—",
                 self._status_text(item.get("status")),
-                self._format(values.get("etfbuynumber")),
                 self._format(values.get("etfbuyamount")),
-                self._format(values.get("etfsellnumber")),
                 self._format(values.get("etfsellamount")),
                 self._format(values.get("netamount"), signed=True),
+                format_basket_count(basket_count(item, "etfbuyamount")),
+                format_basket_count(basket_count(item, "etfsellamount")),
+                format_basket_count(basket_count(item, "netamount"), signed=True),
                 net_creation_quota["label"],
                 "等待盘中变化"
                 if baseline_suppressed
@@ -1074,10 +1192,10 @@ class RemoteClientWindow(QMainWindow):
                 cell.setTextAlignment(
                     Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
                 )
-                if column == 6 and isinstance(values.get("netamount"), (int, float)):
+                if column in {5, 8} and isinstance(values.get("netamount"), (int, float)):
                     net = values["netamount"]
                     cell.setForeground(QColor("#168553" if net > 0 else "#c53b45" if net < 0 else "#526074"))
-                if column == 7:
+                if column == 9:
                     quota_kind = str(net_creation_quota.get("kind") or "")
                     cell.setForeground(
                         QColor(
@@ -1089,7 +1207,7 @@ class RemoteClientWindow(QMainWindow):
                         )
                     )
                     cell.setToolTip(str(net_creation_quota.get("reason") or ""))
-                if column == 8:
+                if column == 10:
                     kind = str(opportunity.get("kind") or "")
                     cell.setForeground(
                         QColor("#168553" if kind == "creation" else "#c53b45" if kind == "redemption" else "#68758a")
@@ -1163,7 +1281,11 @@ class RemoteClientWindow(QMainWindow):
         )
 
     def _show_pcf_detail(self, payload: dict[str, Any]) -> None:
-        dialog = PcfDetailDialog(payload, self)
+        dialog = PcfDetailDialog(
+            payload,
+            self,
+            name_save_callback=self._save_symbol_name if self.server_controls else None,
+        )
         self.pcf_dialogs.append(dialog)
         dialog.finished.connect(
             lambda _result, item=dialog: self._remove_pcf_dialog(item)
@@ -1177,6 +1299,15 @@ class RemoteClientWindow(QMainWindow):
     def _remove_pcf_dialog(self, dialog: PcfDetailDialog) -> None:
         if dialog in self.pcf_dialogs:
             self.pcf_dialogs.remove(dialog)
+
+    def _save_symbol_name(self, symbol: str, name: str) -> None:
+        self.footer_label.setText(f"正在保存 {symbol} 的名称…")
+        self._request(
+            "PUT",
+            f"/api/v1/symbols/{symbol}/name",
+            {"name": name},
+            request_kind="symbol-name",
+        )
 
     def add_remote_symbol(self) -> None:
         code = self.symbol_input.text().strip()

@@ -10,7 +10,10 @@ from PyQt6.QtWidgets import QApplication
 
 from etf_remote_client import (
     RemoteClientWindow,
+    basket_count,
     classify_local_net_creation_quota,
+    format_basket_count,
+    format_share_value,
     resource_path,
     split_address,
 )
@@ -26,6 +29,7 @@ class RemoteClientTest(unittest.TestCase):
         window.sound_check.setChecked(True)
         item = {
             "symbol": "159518",
+            "name": "油气 ETF",
             "status": "monitoring",
             "values": {
                 "etfbuynumber": 3,
@@ -41,6 +45,7 @@ class RemoteClientTest(unittest.TestCase):
                 "trading_day": "2026-08-11",
                 "creation_redemption_unit": 1_000_000,
                 "creation_allowed": True,
+                "creation_limit": 0,
                 "net_creation_limit": 1_000_000,
             },
             "opportunity": {
@@ -52,12 +57,36 @@ class RemoteClientTest(unittest.TestCase):
         window._apply_snapshot(
             {"type": "snapshot", "items": [item], "monitoring": True}
         )
-        self.assertEqual(window.table.item(0, 6).text(), "+1,000,000")
-        self.assertEqual(window.table.item(0, 7).text(), "已满")
-        self.assertEqual(window.table.item(0, 7).foreground().color().name(), "#c53b45")
-        self.assertEqual(window.table.item(0, 8).text(), "申购机会")
-        self.assertEqual(window.table.columnCount(), 11)
-        self.assertEqual(window.table.item(0, 9).text(), "09:30:00")
+        self.assertEqual(window.table.item(0, 1).text(), "油气 ETF")
+        self.assertEqual(window.table.item(0, 3).text(), "300 0000")
+        self.assertEqual(window.table.item(0, 4).text(), "200 0000")
+        self.assertEqual(window.table.item(0, 5).text(), "+100 0000")
+        self.assertEqual(window.table.item(0, 6).text(), "3")
+        self.assertEqual(window.table.item(0, 7).text(), "2")
+        self.assertEqual(window.table.item(0, 8).text(), "+1")
+        self.assertEqual(window.table.item(0, 9).text(), "已满")
+        self.assertEqual(window.table.item(0, 9).foreground().color().name(), "#c53b45")
+        self.assertEqual(window.table.item(0, 10).text(), "申购机会")
+        self.assertEqual(window.table.columnCount(), 13)
+        self.assertEqual(
+            [window.table.horizontalHeaderItem(column).text() for column in range(13)],
+            [
+                "标的",
+                "名称",
+                "主机状态",
+                "申购份额",
+                "赎回份额",
+                "轧差份额",
+                "申购篮子",
+                "赎回篮子",
+                "轧差篮子",
+                "申购额度",
+                "机会判断",
+                "更新时间",
+                "最近变化",
+            ],
+        )
+        self.assertEqual(window.table.item(0, 11).text(), "09:30:00")
         self.assertTrue(window.baseline_established)
         self.assertTrue(window.reset_baseline_button.isEnabled())
 
@@ -93,7 +122,10 @@ class RemoteClientTest(unittest.TestCase):
             play_sound.assert_called_once()
             beep.assert_not_called()
         self.assertEqual(len(window.alert_popups), 1)
-        self.assertIn("轧差份额", window.alert_popups[0].findChildren(type(window.connection_label))[1].text())
+        alert_text = window.alert_popups[0].findChildren(type(window.connection_label))[1].text()
+        self.assertIn("159518", alert_text)
+        self.assertIn("油气 ETF", alert_text)
+        self.assertIn("轧差份额", alert_text)
         self.assertIn("159518", window.changed_symbols)
         self.assertEqual(window.table.item(0, 0).background().color().name(), "#fff0bd")
         self.assertFalse(window.change_banner.isHidden())
@@ -101,18 +133,18 @@ class RemoteClientTest(unittest.TestCase):
         self.assertFalse(window.changed_symbols)
         self.assertTrue(window.change_banner.isHidden())
         self.assertEqual(window.table.item(0, 0).background().color().name(), "#000000")
-        self.assertEqual(window.table.item(0, 7).text(), "已满")
-        self.assertEqual(window.table.item(0, 8).text(), "等待盘中变化")
-        self.assertEqual(window.table.item(0, 10).text(), "—")
+        self.assertEqual(window.table.item(0, 9).text(), "已满")
+        self.assertEqual(window.table.item(0, 10).text(), "等待盘中变化")
+        self.assertEqual(window.table.item(0, 12).text(), "—")
 
         # Pulling the server's unchanged full snapshot must not bring the accepted
         # opportunity/history back onto this client.
         window._apply_snapshot(
             {"type": "snapshot", "items": [changed_item], "monitoring": True}
         )
-        self.assertEqual(window.table.item(0, 7).text(), "已满")
-        self.assertEqual(window.table.item(0, 8).text(), "等待盘中变化")
-        self.assertEqual(window.table.item(0, 10).text(), "—")
+        self.assertEqual(window.table.item(0, 9).text(), "已满")
+        self.assertEqual(window.table.item(0, 10).text(), "等待盘中变化")
+        self.assertEqual(window.table.item(0, 12).text(), "—")
 
         next_item = dict(changed_item)
         next_item["last_change"] = [
@@ -138,15 +170,34 @@ class RemoteClientTest(unittest.TestCase):
             }
         )
         self.assertNotIn("159518", window.baseline_suppressed_symbols)
-        self.assertEqual(window.table.item(0, 8).text(), "盘中赎回机会")
+        self.assertEqual(window.table.item(0, 10).text(), "盘中赎回机会")
         self.assertEqual(
-            window.table.item(0, 10).text(), "赎回份额 2,000,000 → 3,000,000"
+            window.table.item(0, 12).text(), "赎回份额 2,000,000 → 3,000,000"
         )
         for popup in list(window.alert_popups):
             popup.close()
         window.close()
 
-    def test_local_net_creation_quota_uses_realtime_net_shares_and_pcf_limit(self) -> None:
+    def test_baskets_use_pcf_unit_and_shares_use_four_digit_grouping(self) -> None:
+        item = {
+            "values": {"etfbuyamount": 10_000_000, "etfsellamount": 2_500_000},
+            "pcf": {"status": "ready", "creation_redemption_unit": 1_000_000},
+        }
+        self.assertEqual(basket_count(item, "etfbuyamount"), 10)
+        self.assertEqual(format_basket_count(basket_count(item, "etfbuyamount")), "10")
+        self.assertEqual(format_basket_count(basket_count(item, "etfsellamount")), "2.5")
+        item["values"]["netamount"] = 7_500_000
+        self.assertEqual(
+            format_basket_count(basket_count(item, "netamount"), signed=True), "+7.5"
+        )
+        self.assertEqual(format_share_value(1_000_000), "100 0000")
+        self.assertEqual(format_share_value(10_000_000), "1000 0000")
+        self.assertEqual(format_share_value(-4_000_000, signed=True), "-400 0000")
+        item["pcf"]["status"] = "pending"
+        self.assertIsNone(basket_count(item, "etfbuyamount"))
+        self.assertEqual(format_basket_count(None), "待确认")
+
+    def test_local_creation_quota_checks_net_and_cumulative_pcf_limits(self) -> None:
         item = {
             "values": {
                 "etfbuyamount": 1_000_000,
@@ -156,6 +207,7 @@ class RemoteClientTest(unittest.TestCase):
             "pcf": {
                 "status": "ready",
                 "creation_allowed": True,
+                "creation_limit": 0,
                 "net_creation_limit": 1_000_000,
             },
         }
@@ -173,6 +225,32 @@ class RemoteClientTest(unittest.TestCase):
         self.assertEqual(available["label"], "未满")
         self.assertEqual(available["remaining_shares"], 1_000_000)
 
+        # 159866 uses a cumulative CreationLimit rather than a net limit.
+        cumulative_item = {
+            "values": {
+                "etfbuyamount": 10_000_000,
+                "etfsellamount": 0,
+                "netamount": 10_000_000,
+            },
+            "pcf": {
+                "status": "ready",
+                "creation_allowed": True,
+                "creation_limit": 10_000_000,
+                "net_creation_limit": 0,
+            },
+        }
+        cumulative_full = classify_local_net_creation_quota(cumulative_item)
+        self.assertEqual(cumulative_full["kind"], "full")
+        self.assertIn("累计上限", cumulative_full["reason"])
+
+        # Redemption changes the net, but it does not undo cumulative creations.
+        cumulative_item["values"]["etfsellamount"] = 500_000
+        cumulative_item["values"]["netamount"] = 9_500_000
+        still_full = classify_local_net_creation_quota(cumulative_item)
+        self.assertEqual(still_full["kind"], "full")
+        self.assertIn("累计上限", still_full["reason"])
+
+        item["pcf"]["creation_limit"] = 0
         item["pcf"]["net_creation_limit"] = 0
         unlimited = classify_local_net_creation_quota(item)
         self.assertEqual(unlimited["kind"], "available")
@@ -198,12 +276,18 @@ class RemoteClientTest(unittest.TestCase):
 
     def test_web_client_has_local_net_creation_quota_column(self) -> None:
         source_html = resource_path("web", "monitor.html").read_text(encoding="utf-8")
-        self.assertIn("净申购额度", source_html)
-        self.assertIn("function netCreationQuota(item)", source_html)
+        self.assertIn("申购额度", source_html)
+        self.assertIn("function creationQuota(item)", source_html)
+        self.assertIn("申购篮子", source_html)
+        self.assertIn("轧差篮子", source_html)
+        self.assertIn("creation_redemption_unit", source_html)
+        self.assertNotIn("只读客户端 · 观察列表", source_html)
 
     def test_connection_button_uses_manual_red_and_connected_green_states(self) -> None:
         window = RemoteClientWindow(settings_name="TestConnectionButton")
         self.assertFalse(window.server_controls)
+        self.assertTrue(window.address_input.isHidden())
+        self.assertTrue(window.watchlist_card.isHidden())
         self.assertIsNone(window.remote_start_button.parent())
         self.assertIsNone(window.remote_stop_button.parent())
         self.assertIsNone(window.pcf_refresh_button.parent())
@@ -250,7 +334,34 @@ class RemoteClientTest(unittest.TestCase):
         window._show_pcf_detail(payload)
         self.assertEqual(len(window.pcf_dialogs), 1)
         self.assertIn("159518", window.pcf_dialogs[0].windowTitle())
+        self.assertFalse(hasattr(window.pcf_dialogs[0], "name_input"))
         window.pcf_dialogs[0].close()
+        window.close()
+
+    def test_host_pcf_detail_can_save_custom_name(self) -> None:
+        window = RemoteClientWindow(server_controls=True)
+        payload = {
+            "symbol": "159866",
+            "name": "日经 ETF",
+            "custom_name": "",
+            "fund_name": "日经ETF工银",
+            "trading_day": "2026-08-12",
+            "summary_fields": [],
+            "component_columns": [],
+            "components": [],
+        }
+        with patch.object(window, "_request") as request:
+            window._show_pcf_detail(payload)
+            dialog = window.pcf_dialogs[0]
+            dialog.name_input.setText("日经套利")
+            dialog.name_save_button.click()
+            request.assert_called_once_with(
+                "PUT",
+                "/api/v1/symbols/159866/name",
+                {"name": "日经套利"},
+                request_kind="symbol-name",
+            )
+        dialog.close()
         window.close()
 
 

@@ -79,17 +79,30 @@ def now_iso() -> str:
 
 
 def signed_number(value: Any) -> str:
-    if not isinstance(value, (int, float)):
-        return "—"
-    if value > 0:
-        return f"+{value:,.0f}"
-    return f"{value:,.0f}"
+    return share_number(value, signed=True)
 
 
 def plain_number(value: Any) -> str:
-    if not isinstance(value, (int, float)):
+    return share_number(value)
+
+
+def share_number(value: Any, signed: bool = False) -> str:
+    """Format share counts in four-digit Chinese units."""
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
         return "—"
-    return f"{value:,.0f}"
+    rounded = int(round(value))
+    digits = str(abs(rounded))
+    groups: list[str] = []
+    while digits:
+        groups.append(digits[-4:])
+        digits = digits[:-4]
+    text = " ".join(reversed(groups)) or "0"
+    if rounded < 0:
+        return f"-{text}"
+    if signed and rounded > 0:
+        return f"+{text}"
+    return text
 
 
 class ConfigStore:
@@ -101,6 +114,7 @@ class ConfigStore:
     def defaults() -> dict[str, Any]:
         return {
             "symbols": ["159518", "159393"],
+            "symbol_names": {},
             "refresh_interval_seconds": 1.0,
             "network": {
                 "host": "0.0.0.0",
@@ -209,10 +223,37 @@ class ConfigStore:
         self.save()
         return normalized
 
+    def symbol_name(self, symbol: str) -> str:
+        code = display_symbol(normalize_symbol(symbol))
+        names = self.data.get("symbol_names")
+        if not isinstance(names, dict):
+            return ""
+        return str(names.get(code) or "").strip()
+
+    def set_symbol_name(self, symbol: str, name: str) -> str:
+        normalized = normalize_symbol(symbol)
+        if normalized not in self.symbols:
+            raise ValueError("只能修改当前观察列表中的标的名称")
+        clean = " ".join(str(name).split()).strip()
+        if len(clean) > 40:
+            raise ValueError("标的名称不能超过 40 个字符")
+        names = self.data.setdefault("symbol_names", {})
+        if not isinstance(names, dict):
+            names = {}
+            self.data["symbol_names"] = names
+        code = display_symbol(normalized)
+        if clean:
+            names[code] = clean
+        else:
+            names.pop(code, None)
+        self.save()
+        return clean
+
 
 @dataclass
 class SymbolState:
     symbol: str
+    custom_name: str = ""
     status: str = "waiting"
     sub_id: int | None = None
     values: dict[str, Any] = field(default_factory=dict)
@@ -229,6 +270,8 @@ class SymbolState:
         return {
             "symbol": display_symbol(self.symbol),
             "windcode": self.symbol,
+            "name": self.custom_name or str(self.pcf.get("fund_name") or ""),
+            "custom_name": self.custom_name,
             "status": self.status,
             "sub_id": self.sub_id,
             "values": dict(self.values),
@@ -306,7 +349,8 @@ class MonitorEngine:
         self.manager = ConnectionManager()
         self.sessions: dict[str, SubscriptionSession] = {}
         self.states: dict[str, SymbolState] = {
-            symbol: SymbolState(symbol) for symbol in config.symbols
+            symbol: SymbolState(symbol, custom_name=config.symbol_name(symbol))
+            for symbol in config.symbols
         }
         self.baselines: dict[str, dict[str, Any]] = {}
         self.monitoring = False
@@ -445,7 +489,10 @@ class MonitorEngine:
             await self.stop_monitoring("更新观察列表")
         normalized = self.config.set_symbols(symbols)
         self.states = {
-            symbol: self.states.get(symbol, SymbolState(symbol))
+            symbol: self.states.get(
+                symbol,
+                SymbolState(symbol, custom_name=self.config.symbol_name(symbol)),
+            )
             for symbol in normalized
         }
         self.baselines = {
@@ -459,6 +506,15 @@ class MonitorEngine:
         self.tasks.append(pcf_task)
         if was_monitoring:
             return await self.start_monitoring("watchlist-update")
+        event = self.snapshot_event()
+        await self.manager.broadcast(event)
+        return event
+
+    async def update_symbol_name(self, symbol: str, name: str) -> dict[str, Any]:
+        normalized = normalize_symbol(symbol)
+        clean = self.config.set_symbol_name(normalized, name)
+        state = self.states.setdefault(normalized, SymbolState(normalized))
+        state.custom_name = clean
         event = self.snapshot_event()
         await self.manager.broadcast(event)
         return event
@@ -700,6 +756,8 @@ class MonitorEngine:
             raise ValueError("PCF 尚未就绪")
         result = dict(detail)
         state = self.states.setdefault(normalized, SymbolState(normalized))
+        result["custom_name"] = state.custom_name
+        result["name"] = state.custom_name or str(result.get("fund_name") or "")
         result["opportunity"] = state.opportunity or classify_intraday_opportunity(
             None, state.values, state.pcf, reference_day=today
         )
@@ -848,6 +906,10 @@ class WatchlistRequest(BaseModel):
     symbols: list[str] = Field(min_length=1, max_length=200)
 
 
+class SymbolNameRequest(BaseModel):
+    name: str = Field(default="", max_length=40)
+
+
 def require_loopback(request: Request) -> None:
     """Reject data-source mutations coming from LAN clients."""
 
@@ -927,6 +989,16 @@ def create_app(
         require_loopback(request)
         try:
             return await engine.update_watchlist(body.symbols)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/api/v1/symbols/{symbol}/name")
+    async def set_symbol_name(
+        symbol: str, body: SymbolNameRequest, request: Request
+    ) -> dict[str, Any]:
+        require_loopback(request)
+        try:
+            return await engine.update_symbol_name(symbol, body.name)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

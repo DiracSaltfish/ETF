@@ -126,6 +126,20 @@ class MonitorServerTest(unittest.TestCase):
                 item = snapshot.json()["items"][0]
                 self.assertEqual(item["values"]["netamount"], 1_000_000)
                 self.assertRegex(item["updated_at"], r"^\d{2}:\d{2}:\d{2}$")
+                self.assertEqual(
+                    app.state.engine._change_details(
+                        {"etfbuyamount": 1_000_000, "etfsellamount": 0},
+                        {"etfbuyamount": 2_000_000, "etfsellamount": 0},
+                    )[0]["text"],
+                    "申购份额 100 0000 → 200 0000",
+                )
+
+                renamed = client.put(
+                    "/api/v1/symbols/159518/name", json={"name": "油气套利"}
+                )
+                self.assertEqual(renamed.status_code, 200)
+                self.assertEqual(renamed.json()["items"][0]["name"], "油气套利")
+                self.assertEqual(ConfigStore(config_path).symbol_name("159518"), "油气套利")
 
                 started = client.post("/api/v1/monitor/start")
                 self.assertEqual(started.status_code, 200)
@@ -162,6 +176,12 @@ class MonitorServerTest(unittest.TestCase):
                 self.assertEqual(
                     remote.put(
                         "/api/v1/watchlist", json={"symbols": ["159518"]}
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    remote.put(
+                        "/api/v1/symbols/159518/name", json={"name": "远程改名"}
                     ).status_code,
                     403,
                 )
