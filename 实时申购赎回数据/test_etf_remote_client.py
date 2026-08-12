@@ -54,6 +54,14 @@ class RemoteClientTest(unittest.TestCase):
 
         changed_item = dict(item)
         changed_item["values"] = dict(item["values"], netamount=2_000_000)
+        changed_item["last_change"] = [
+            {"text": "轧差份额 +1,000,000 → +2,000,000"}
+        ]
+        changed_item["opportunity"] = {
+            "kind": "creation",
+            "label": "盘中申购机会",
+            "reason": "盘中净申购增加",
+        }
         event = {
             "type": "change",
             "items": [
@@ -84,6 +92,45 @@ class RemoteClientTest(unittest.TestCase):
         self.assertFalse(window.changed_symbols)
         self.assertTrue(window.change_banner.isHidden())
         self.assertEqual(window.table.item(0, 0).background().color().name(), "#000000")
+        self.assertEqual(window.table.item(0, 7).text(), "等待盘中变化")
+        self.assertEqual(window.table.item(0, 9).text(), "—")
+
+        # Pulling the server's unchanged full snapshot must not bring the accepted
+        # opportunity/history back onto this client.
+        window._apply_snapshot(
+            {"type": "snapshot", "items": [changed_item], "monitoring": True}
+        )
+        self.assertEqual(window.table.item(0, 7).text(), "等待盘中变化")
+        self.assertEqual(window.table.item(0, 9).text(), "—")
+
+        next_item = dict(changed_item)
+        next_item["last_change"] = [
+            {"text": "赎回份额 2,000,000 → 3,000,000"}
+        ]
+        next_item["opportunity"] = {
+            "kind": "redemption",
+            "label": "盘中赎回机会",
+            "reason": "盘中净赎回增加",
+        }
+        window.popup_check.setChecked(False)
+        window.sound_check.setChecked(False)
+        window._apply_change(
+            {
+                "type": "change",
+                "items": [
+                    {
+                        "symbol": "159518",
+                        "current": next_item,
+                        "changes": next_item["last_change"],
+                    }
+                ],
+            }
+        )
+        self.assertNotIn("159518", window.baseline_suppressed_symbols)
+        self.assertEqual(window.table.item(0, 7).text(), "盘中赎回机会")
+        self.assertEqual(
+            window.table.item(0, 9).text(), "赎回份额 2,000,000 → 3,000,000"
+        )
         for popup in list(window.alert_popups):
             popup.close()
         window.close()

@@ -388,6 +388,10 @@ class RemoteClientWindow(QMainWindow):
         self.alert_popups: list[ClientAlertPopup] = []
         self.pcf_dialogs: list[PcfDetailDialog] = []
         self.changed_symbols: set[str] = set()
+        # Symbols whose server-side opportunity/change history has been accepted as
+        # the local baseline.  Keep this separate from ``items`` because regular
+        # snapshot refreshes still contain the server's last change.
+        self.baseline_suppressed_symbols: set[str] = set()
         self.baseline_established = False
         self.last_alert_at = 0.0
         self.audio_output = QAudioOutput(self)
@@ -830,6 +834,9 @@ class RemoteClientWindow(QMainWindow):
         self.items = {
             str(item.get("symbol")): item for item in event.get("items", [])
         }
+        # A full snapshot must not resurrect changes that this client has already
+        # accepted as its baseline.  Drop only symbols no longer in the watchlist.
+        self.baseline_suppressed_symbols.intersection_update(self.items)
         self._rebuild_table()
         if not self.baseline_established:
             self.baseline_established = True
@@ -848,6 +855,9 @@ class RemoteClientWindow(QMainWindow):
             current = changed.get("current")
             if isinstance(current, dict):
                 self.items[symbol] = current
+            # A real change push is the only event that releases the local reset
+            # suppression for this symbol.
+            self.baseline_suppressed_symbols.discard(symbol)
             if self.baseline_established and symbol:
                 self.changed_symbols.add(symbol)
             details = [str(item.get("text", "")) for item in changed.get("changes", [])]
@@ -886,6 +896,7 @@ class RemoteClientWindow(QMainWindow):
 
     def reset_change_baseline(self) -> None:
         self.changed_symbols.clear()
+        self.baseline_suppressed_symbols = set(self.items)
         self.baseline_established = bool(self.items)
         self._rebuild_table()
         self.hide_change_banner()
@@ -967,8 +978,9 @@ class RemoteClientWindow(QMainWindow):
         for row, symbol in enumerate(symbols):
             item = self.items[symbol]
             values = item.get("values", {})
-            changes = item.get("last_change", [])
-            opportunity = item.get("opportunity") or {}
+            baseline_suppressed = symbol in self.baseline_suppressed_symbols
+            changes = [] if baseline_suppressed else item.get("last_change", [])
+            opportunity = {} if baseline_suppressed else item.get("opportunity") or {}
             row_values = [
                 symbol,
                 self._status_text(item.get("status")),
@@ -977,7 +989,9 @@ class RemoteClientWindow(QMainWindow):
                 self._format(values.get("etfsellnumber")),
                 self._format(values.get("etfsellamount")),
                 self._format(values.get("netamount"), signed=True),
-                opportunity.get("label") or "待确认",
+                "等待盘中变化"
+                if baseline_suppressed
+                else opportunity.get("label") or "待确认",
                 self._format_time(item.get("updated_at")),
                 "；".join(str(change.get("text", "")) for change in changes) or "—",
             ]
