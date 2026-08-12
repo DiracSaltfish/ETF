@@ -82,7 +82,7 @@
       <thead><tr>
         <th>标的</th><th>状态</th><th>申购笔数</th><th>申购份额</th>
         <th>赎回笔数</th><th>赎回份额</th><th>轧差份额</th>
-        <th>机会判断</th><th>更新时间</th><th>最近变化</th>
+        <th>净申购额度</th><th>机会判断</th><th>更新时间</th><th>最近变化</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -124,12 +124,31 @@
     return text.slice(0,8);
   };
 
+  function netCreationQuota(item) {
+    const pcf=item.pcf||{}, values=item.values||{};
+    const net=Number(values.netamount), limit=Number(pcf.net_creation_limit);
+    if(values.netamount===null||values.netamount===undefined||!Number.isFinite(net))
+      return {label:'待确认',className:'',reason:'实时轧差份额尚未就绪'};
+    if(pcf.status!=='ready')
+      return {label:'待确认',className:'',reason:'当日 PCF 尚未就绪'};
+    if(pcf.net_creation_limit===null||pcf.net_creation_limit===undefined||!Number.isFinite(limit))
+      return {label:'待确认',className:'',reason:'PCF 缺少净申购上限'};
+    if(limit>0&&net>=limit)
+      return {label:'已满',className:'negative',reason:`当前净申购 ${fmt(net)}，已达到 PCF 上限 ${fmt(limit)}`};
+    if(pcf.creation_allowed===false)
+      return {label:'申购关闭',className:'negative',reason:'PCF 明确关闭申购'};
+    if(limit<=0)
+      return {label:'未满',className:'positive',reason:'PCF 未设置正数净申购上限'};
+    return {label:'未满',className:'positive',reason:`当前净申购 ${fmt(net)} / PCF 上限 ${fmt(limit)}，剩余 ${fmt(Math.max(0,limit-net))}`};
+  }
+
   function render() {
     const symbols = [...state.items.keys()].sort();
     $('rows').innerHTML = symbols.map(symbol => {
       const item=state.items.get(symbol), v=item.values||{};
       const net=v.netamount===null||v.netamount===undefined?null:Number(v.netamount);
       const opportunity=item.opportunity||{};
+      const quota=netCreationQuota(item);
       const change=(item.last_change||[]).map(x=>x.text).join('；') || '—';
       const netClass=net!==null&&net>0?'positive':net!==null&&net<0?'negative':'';
       const opportunityClass=opportunity.kind==='creation'?'positive':opportunity.kind==='redemption'?'negative':'';
@@ -137,6 +156,7 @@
         <td>${esc(statusText(item.status))}</td><td>${fmt(v.etfbuynumber)}</td>
         <td>${fmt(v.etfbuyamount)}</td><td>${fmt(v.etfsellnumber)}</td>
         <td>${fmt(v.etfsellamount)}</td><td class="${netClass}">${fmt(net,true)}</td>
+        <td class="${quota.className}" title="${esc(quota.reason)}">${esc(quota.label)}</td>
         <td class="${opportunityClass}">${esc(opportunity.label||'待确认')}</td>
         <td>${esc(timeOnly(item.updated_at))}</td><td class="change">${esc(change)}</td></tr>`;
     }).join('');

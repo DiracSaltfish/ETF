@@ -25,7 +25,7 @@ class MacHomeAppTest(unittest.TestCase):
             self.assertEqual(window.windowTitle(), "ETF 监控主机")
             self.assertTrue(window.address_input.isReadOnly())
             self.assertIn(":6787/", window.lan_url)
-            self.assertEqual(window.table.columnCount(), 10)
+            self.assertEqual(window.table.columnCount(), 11)
             self.assertTrue(local_ip_address())
             window.allow_quit = True
             window.close()

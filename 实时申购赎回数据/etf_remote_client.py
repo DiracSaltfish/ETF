@@ -87,6 +87,77 @@ def split_address(value: str, default_port: int = 6787) -> tuple[str, int]:
     return host or "127.0.0.1", max(1, min(port, 65535))
 
 
+def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
+    """Classify current net creation usage from the PCF snapshot locally.
+
+    A zero PCF limit is treated as no positive net-creation cap when creation
+    remains open, which matches the Shenzhen PCFs used by this application.
+    """
+
+    result: dict[str, Any] = {
+        "kind": "pending",
+        "label": "待确认",
+        "net_shares": None,
+        "limit_shares": None,
+        "remaining_shares": None,
+        "reason": "等待实时份额和 PCF",
+    }
+    values = item.get("values") or {}
+    pcf = item.get("pcf") or {}
+    net_shares = values.get("netamount")
+    if not isinstance(net_shares, (int, float)) or isinstance(net_shares, bool):
+        result["reason"] = "实时轧差份额尚未就绪"
+        return result
+    result["net_shares"] = net_shares
+    if pcf.get("status") != "ready":
+        result["reason"] = "当日 PCF 尚未就绪"
+        return result
+
+    limit_shares = pcf.get("net_creation_limit")
+    if not isinstance(limit_shares, (int, float)) or isinstance(limit_shares, bool):
+        result["reason"] = "PCF 缺少净申购上限"
+        return result
+    result["limit_shares"] = limit_shares
+
+    if limit_shares > 0 and float(net_shares) >= float(limit_shares):
+        result.update(
+            kind="full",
+            label="已满",
+            remaining_shares=0,
+            reason=(
+                f"当前净申购 {net_shares:,.0f}，已达到 PCF 上限 "
+                f"{limit_shares:,.0f}"
+            ),
+        )
+        return result
+    if pcf.get("creation_allowed") is False:
+        result.update(
+            kind="closed",
+            label="申购关闭",
+            reason="PCF 明确关闭申购",
+        )
+        return result
+    if limit_shares <= 0:
+        result.update(
+            kind="available",
+            label="未满",
+            reason="PCF 未设置正数净申购上限",
+        )
+        return result
+
+    remaining = max(0.0, float(limit_shares) - float(net_shares))
+    result.update(
+        kind="available",
+        label="未满",
+        remaining_shares=remaining,
+        reason=(
+            f"当前净申购 {net_shares:,.0f} / PCF 上限 {limit_shares:,.0f}，"
+            f"剩余 {remaining:,.0f}"
+        ),
+    )
+    return result
+
+
 class ClientAlertPopup(QDialog):
     def __init__(self, message: str) -> None:
         super().__init__(None)
@@ -517,7 +588,7 @@ class RemoteClientWindow(QMainWindow):
         watch_layout.addWidget(self.connection_label)
         layout.addWidget(watchlist)
 
-        self.table = QTableWidget(0, 10)
+        self.table = QTableWidget(0, 11)
         self.table.setObjectName("monitorTable")
         self.table.setHorizontalHeaderLabels(
             [
@@ -528,6 +599,7 @@ class RemoteClientWindow(QMainWindow):
                 "赎回笔数",
                 "赎回份额",
                 "轧差份额",
+                "净申购额度",
                 "机会判断",
                 "更新时间",
                 "最近变化",
@@ -540,7 +612,7 @@ class RemoteClientWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(10, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
 
         self.footer_label = QLabel("WebSocket 等待连接")
@@ -981,6 +1053,7 @@ class RemoteClientWindow(QMainWindow):
             baseline_suppressed = symbol in self.baseline_suppressed_symbols
             changes = [] if baseline_suppressed else item.get("last_change", [])
             opportunity = {} if baseline_suppressed else item.get("opportunity") or {}
+            net_creation_quota = classify_local_net_creation_quota(item)
             row_values = [
                 symbol,
                 self._status_text(item.get("status")),
@@ -989,6 +1062,7 @@ class RemoteClientWindow(QMainWindow):
                 self._format(values.get("etfsellnumber")),
                 self._format(values.get("etfsellamount")),
                 self._format(values.get("netamount"), signed=True),
+                net_creation_quota["label"],
                 "等待盘中变化"
                 if baseline_suppressed
                 else opportunity.get("label") or "待确认",
@@ -1004,6 +1078,18 @@ class RemoteClientWindow(QMainWindow):
                     net = values["netamount"]
                     cell.setForeground(QColor("#168553" if net > 0 else "#c53b45" if net < 0 else "#526074"))
                 if column == 7:
+                    quota_kind = str(net_creation_quota.get("kind") or "")
+                    cell.setForeground(
+                        QColor(
+                            "#168553"
+                            if quota_kind == "available"
+                            else "#c53b45"
+                            if quota_kind in {"full", "closed"}
+                            else "#68758a"
+                        )
+                    )
+                    cell.setToolTip(str(net_creation_quota.get("reason") or ""))
+                if column == 8:
                     kind = str(opportunity.get("kind") or "")
                     cell.setForeground(
                         QColor("#168553" if kind == "creation" else "#c53b45" if kind == "redemption" else "#68758a")

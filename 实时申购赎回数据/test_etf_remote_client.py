@@ -8,7 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication
 
-from etf_remote_client import RemoteClientWindow, resource_path, split_address
+from etf_remote_client import (
+    RemoteClientWindow,
+    classify_local_net_creation_quota,
+    resource_path,
+    split_address,
+)
 
 
 APP = QApplication.instance() or QApplication([])
@@ -35,6 +40,8 @@ class RemoteClientTest(unittest.TestCase):
                 "status": "ready",
                 "trading_day": "2026-08-11",
                 "creation_redemption_unit": 1_000_000,
+                "creation_allowed": True,
+                "net_creation_limit": 1_000_000,
             },
             "opportunity": {
                 "kind": "creation",
@@ -46,9 +53,11 @@ class RemoteClientTest(unittest.TestCase):
             {"type": "snapshot", "items": [item], "monitoring": True}
         )
         self.assertEqual(window.table.item(0, 6).text(), "+1,000,000")
-        self.assertEqual(window.table.item(0, 7).text(), "申购机会")
-        self.assertEqual(window.table.columnCount(), 10)
-        self.assertEqual(window.table.item(0, 8).text(), "09:30:00")
+        self.assertEqual(window.table.item(0, 7).text(), "已满")
+        self.assertEqual(window.table.item(0, 7).foreground().color().name(), "#c53b45")
+        self.assertEqual(window.table.item(0, 8).text(), "申购机会")
+        self.assertEqual(window.table.columnCount(), 11)
+        self.assertEqual(window.table.item(0, 9).text(), "09:30:00")
         self.assertTrue(window.baseline_established)
         self.assertTrue(window.reset_baseline_button.isEnabled())
 
@@ -92,16 +101,18 @@ class RemoteClientTest(unittest.TestCase):
         self.assertFalse(window.changed_symbols)
         self.assertTrue(window.change_banner.isHidden())
         self.assertEqual(window.table.item(0, 0).background().color().name(), "#000000")
-        self.assertEqual(window.table.item(0, 7).text(), "等待盘中变化")
-        self.assertEqual(window.table.item(0, 9).text(), "—")
+        self.assertEqual(window.table.item(0, 7).text(), "已满")
+        self.assertEqual(window.table.item(0, 8).text(), "等待盘中变化")
+        self.assertEqual(window.table.item(0, 10).text(), "—")
 
         # Pulling the server's unchanged full snapshot must not bring the accepted
         # opportunity/history back onto this client.
         window._apply_snapshot(
             {"type": "snapshot", "items": [changed_item], "monitoring": True}
         )
-        self.assertEqual(window.table.item(0, 7).text(), "等待盘中变化")
-        self.assertEqual(window.table.item(0, 9).text(), "—")
+        self.assertEqual(window.table.item(0, 7).text(), "已满")
+        self.assertEqual(window.table.item(0, 8).text(), "等待盘中变化")
+        self.assertEqual(window.table.item(0, 10).text(), "—")
 
         next_item = dict(changed_item)
         next_item["last_change"] = [
@@ -127,13 +138,50 @@ class RemoteClientTest(unittest.TestCase):
             }
         )
         self.assertNotIn("159518", window.baseline_suppressed_symbols)
-        self.assertEqual(window.table.item(0, 7).text(), "盘中赎回机会")
+        self.assertEqual(window.table.item(0, 8).text(), "盘中赎回机会")
         self.assertEqual(
-            window.table.item(0, 9).text(), "赎回份额 2,000,000 → 3,000,000"
+            window.table.item(0, 10).text(), "赎回份额 2,000,000 → 3,000,000"
         )
         for popup in list(window.alert_popups):
             popup.close()
         window.close()
+
+    def test_local_net_creation_quota_uses_realtime_net_shares_and_pcf_limit(self) -> None:
+        item = {
+            "values": {
+                "etfbuyamount": 1_000_000,
+                "etfsellamount": 0,
+                "netamount": 1_000_000,
+            },
+            "pcf": {
+                "status": "ready",
+                "creation_allowed": True,
+                "net_creation_limit": 1_000_000,
+            },
+        }
+        full = classify_local_net_creation_quota(item)
+        self.assertEqual(full["kind"], "full")
+        self.assertEqual(full["label"], "已满")
+        self.assertEqual(full["remaining_shares"], 0)
+
+        # One redemption basket reduces the live net creation below the PCF
+        # limit and immediately releases creation capacity.
+        item["values"]["etfsellamount"] = 1_000_000
+        item["values"]["netamount"] = 0
+        available = classify_local_net_creation_quota(item)
+        self.assertEqual(available["kind"], "available")
+        self.assertEqual(available["label"], "未满")
+        self.assertEqual(available["remaining_shares"], 1_000_000)
+
+        item["pcf"]["net_creation_limit"] = 0
+        unlimited = classify_local_net_creation_quota(item)
+        self.assertEqual(unlimited["kind"], "available")
+        self.assertEqual(unlimited["label"], "未满")
+
+        item["pcf"]["creation_allowed"] = False
+        closed = classify_local_net_creation_quota(item)
+        self.assertEqual(closed["kind"], "closed")
+        self.assertEqual(closed["label"], "申购关闭")
 
     def test_connection_settings_and_builtin_sounds_are_available(self) -> None:
         self.assertEqual(split_address("http://192.168.1.8:7000/"), ("192.168.1.8", 7000))
@@ -147,6 +195,11 @@ class RemoteClientTest(unittest.TestCase):
         self.assertEqual(window.sound_repeat_count, 3)
         self.assertEqual(window._settings_values()["sound_repeat_count"], 3)
         window.close()
+
+    def test_web_client_has_local_net_creation_quota_column(self) -> None:
+        source_html = resource_path("web", "monitor.html").read_text(encoding="utf-8")
+        self.assertIn("净申购额度", source_html)
+        self.assertIn("function netCreationQuota(item)", source_html)
 
     def test_connection_button_uses_manual_red_and_connected_green_states(self) -> None:
         window = RemoteClientWindow(settings_name="TestConnectionButton")
