@@ -2,3 +2,8 @@
 .idea/
 __pycache__/
 *.py[cod]
+
+# PyInstaller build and release outputs for the ETF monitoring applications.
+# Keep source, tests, configuration and release instructions in Git instead.
+实时申购赎回数据/build/
+实时申购赎回数据/dist/
