@@ -122,10 +122,10 @@ class ConfigStore:
             },
             "schedule": {
                 "enabled": True,
-                "policy_version": 3,
+                "policy_version": 4,
                 "timezone": "Asia/Shanghai",
                 "weekdays": [0, 1, 2, 3, 4],
-                "start": "09:10",
+                "start": "09:15",
                 "stop": "15:00",
             },
             "pcf": {
@@ -154,12 +154,12 @@ class ConfigStore:
                 loaded_schedule = loaded.get("schedule")
                 if not isinstance(loaded_schedule, dict):
                     loaded_schedule = {}
-                if int(loaded_schedule.get("policy_version", 1)) < 3:
-                    # One-time migration from the former 09:15-15:10 policy.
+                if int(loaded_schedule.get("policy_version", 1)) < 4:
+                    # One-time migration to the 09:15-15:00 collection policy.
                     # The host owns collection; remote clients are read-only.
-                    data["schedule"]["start"] = "09:10"
+                    data["schedule"]["start"] = "09:15"
                     data["schedule"]["stop"] = "15:00"
-                    data["schedule"]["policy_version"] = 3
+                    data["schedule"]["policy_version"] = 4
                 loaded_pcf = loaded.get("pcf")
                 if not isinstance(loaded_pcf, dict):
                     loaded_pcf = {}
@@ -838,7 +838,7 @@ class MonitorEngine:
         now = datetime.now(timezone)
         if now.weekday() not in schedule.get("weekdays", [0, 1, 2, 3, 4]):
             return False
-        start = datetime_time.fromisoformat(str(schedule.get("start", "09:10")))
+        start = datetime_time.fromisoformat(str(schedule.get("start", "09:15")))
         stop = datetime_time.fromisoformat(str(schedule.get("stop", "15:00")))
         return start <= now.time().replace(tzinfo=None) < stop
 

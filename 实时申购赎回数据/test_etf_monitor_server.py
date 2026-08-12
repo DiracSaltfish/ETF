@@ -57,11 +57,11 @@ class MonitorServerTest(unittest.TestCase):
             datetime_time(9, 0),
         )
 
-    def test_default_collection_schedule_is_0910_to_1500(self) -> None:
+    def test_default_collection_schedule_is_0915_to_1500(self) -> None:
         schedule = ConfigStore.defaults()["schedule"]
-        self.assertEqual(schedule["start"], "09:10")
+        self.assertEqual(schedule["start"], "09:15")
         self.assertEqual(schedule["stop"], "15:00")
-        self.assertEqual(schedule["policy_version"], 3)
+        self.assertEqual(schedule["policy_version"], 4)
 
     def test_legacy_schedule_is_migrated_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -71,17 +71,18 @@ class MonitorServerTest(unittest.TestCase):
                     {
                         "schedule": {
                             "enabled": True,
-                            "start": "09:15",
-                            "stop": "15:10",
+                            "policy_version": 3,
+                            "start": "09:10",
+                            "stop": "15:00",
                         }
                     }
                 ),
                 encoding="utf-8",
             )
             schedule = ConfigStore(path).data["schedule"]
-            self.assertEqual(schedule["start"], "09:10")
+            self.assertEqual(schedule["start"], "09:15")
             self.assertEqual(schedule["stop"], "15:00")
-            self.assertEqual(schedule["policy_version"], 3)
+            self.assertEqual(schedule["policy_version"], 4)
 
     def test_legacy_pcf_start_is_persistently_migrated_to_0830(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

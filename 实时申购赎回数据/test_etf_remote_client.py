@@ -6,15 +6,21 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget
 
 from etf_remote_client import (
+    DoubleClickButton,
+    QmtBackendClient,
     RemoteClientWindow,
+    _qmt_snapshot_checksum,
+    _qmt_sorted_orders,
+    _qmt_sorted_positions,
     basket_count,
     classify_local_net_creation_quota,
     format_basket_count,
     format_share_value,
     resource_path,
+    qmt_etf_code,
     split_address,
 )
 
@@ -273,6 +279,243 @@ class RemoteClientTest(unittest.TestCase):
         self.assertEqual(window.sound_repeat_count, 3)
         self.assertEqual(window._settings_values()["sound_repeat_count"], 3)
         window.close()
+
+    def test_qmt_code_normalization_and_protocol_state_sync(self) -> None:
+        self.assertEqual(qmt_etf_code("159518"), "159518.SZ")
+        self.assertEqual(qmt_etf_code("510050"), "510050.SH")
+        self.assertEqual(qmt_etf_code("510050.sh"), "510050.SH")
+        with self.assertRaises(ValueError):
+            qmt_etf_code("15951")
+
+        client = QmtBackendClient("QMT-test", "127.0.0.1", 9527)
+        positions = [{"code": "159518.SZ", "volume": 1000000}]
+        sorted_positions = _qmt_sorted_positions(positions)
+        client._handle_message(
+            {
+                "type": "positions_data",
+                "sync_mode": "full",
+                "snapshot_id": "positions-1",
+                "seq": 1,
+                "count": 1,
+                "checksum": _qmt_snapshot_checksum(
+                    sorted_positions,
+                    {"available_cash": 123456.78},
+                ),
+                "available_cash": 123456.78,
+                "data": positions,
+            }
+        )
+        initial_orders = [
+            {
+                "order_id": "1001",
+                "code": "159518.SZ",
+                "direction": "买入",
+                "status": "已申报",
+            }
+        ]
+        sorted_initial_orders = _qmt_sorted_orders(initial_orders)
+        client._handle_message(
+            {
+                "type": "orders_data",
+                "sync_mode": "full",
+                "snapshot_id": "orders-1",
+                "seq": 1,
+                "count": 1,
+                "checksum": _qmt_snapshot_checksum(sorted_initial_orders),
+                "data": initial_orders,
+            }
+        )
+        next_orders = [{"order_id": "1002", "code": "510050.SH"}]
+        client._handle_message(
+            {
+                "type": "orders_data",
+                "sync_mode": "delta",
+                "snapshot_id": "orders-1",
+                "seq": 2,
+                "count": 1,
+                "checksum": _qmt_snapshot_checksum(_qmt_sorted_orders(next_orders)),
+                "upserts": next_orders,
+                "remove_ids": ["1001"],
+            }
+        )
+        self.assertEqual(client.available_cash, 123456.78)
+        self.assertEqual(client.positions[0]["code"], "159518.SZ")
+        self.assertEqual(client.orders_for_symbol("159518"), [])
+        self.assertEqual(client.orders_for_symbol("510050")[0]["order_id"], "1002")
+
+        with patch.object(client, "is_ready", return_value=True), patch.object(
+            client, "_send_json", return_value=True
+        ) as send:
+            self.assertTrue(client.send_etf_order("159518", "PURCHASE"))
+        request = send.call_args.args[0]
+        self.assertEqual(
+            {key: request[key] for key in ("type", "action", "code", "qty")},
+            {"type": "etf_order", "action": "PURCHASE", "code": "159518.SZ", "qty": 1},
+        )
+        self.assertTrue(request["client_order_id"].startswith("ETF-QMT-test-P-159518-"))
+        client.close()
+
+    def test_pcf_detail_includes_independent_qmt_trade_tabs(self) -> None:
+        window = RemoteClientWindow(settings_name="TestQmtDetailTabs")
+        payload = {
+            "symbol": "159518",
+            "fund_name": "测试 ETF",
+            "trading_day": "2026-08-12",
+            "summary_fields": [],
+            "component_columns": [],
+            "components": [],
+        }
+        window._show_pcf_detail(payload)
+        dialog = window.pcf_dialogs[0]
+        self.assertEqual(set(dialog.qmt_tabs), {"QMT1", "QMT2"})
+        tabs = dialog.findChild(QTabWidget, "pcfDetailTabs")
+        self.assertIsNotNone(tabs)
+        self.assertEqual([tabs.tabText(index) for index in range(tabs.count())], ["清单摘要", "成分证券（0）", "QMT1", "QMT2"])
+        rendered_labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        self.assertNotIn("判断：", rendered_labels)
+        self.assertNotIn("当前标的仅发送", rendered_labels)
+        self.assertEqual(
+            len(dialog.findChildren(DoubleClickButton)),
+            4,
+        )
+        purchase = dialog.qmt_tabs["QMT1"]["purchase"]
+        redeem = dialog.qmt_tabs["QMT1"]["redeem"]
+        self.assertGreaterEqual(purchase.minimumWidth(), 272)
+        self.assertGreaterEqual(purchase.minimumHeight(), 68)
+        self.assertGreaterEqual(redeem.minimumWidth(), 272)
+        self.assertIn("QTabWidget#pcfDetailTabs", dialog.styleSheet())
+        qmt1 = window.qmt_clients["QMT1"]
+        positions: list[dict] = []
+        qmt1._handle_message(
+            {
+                "type": "positions_data",
+                "sync_mode": "full",
+                "snapshot_id": "positions-1",
+                "seq": 1,
+                "count": 0,
+                "checksum": _qmt_snapshot_checksum(
+                    positions,
+                    {"available_cash": 10000},
+                ),
+                "available_cash": 10000,
+                "data": positions,
+            }
+        )
+        self.assertIn("¥10,000.00", dialog.qmt_tabs["QMT1"]["cash"].text())
+        with patch.object(qmt1, "is_ready", return_value=True), patch.object(
+            qmt1, "send_etf_order", return_value=True
+        ) as send:
+            dialog._submit_qmt_order("QMT1", "REDEEM")
+        send.assert_called_once_with("159518", "REDEEM")
+        dialog.close()
+        window.close()
+
+    def test_qmt_requires_welcome_and_two_valid_full_snapshots_before_ready(self) -> None:
+        client = QmtBackendClient("QMT-test", "127.0.0.1", 9527)
+        client.connection_state = "syncing"
+        with patch.object(client, "is_connected", return_value=True):
+            client._handle_message({"type": "welcome", "push_sync": True})
+            self.assertFalse(client.is_ready())
+
+            orders: list[dict] = []
+            client._handle_message(
+                {
+                    "type": "orders_data",
+                    "sync_mode": "full",
+                    "snapshot_id": "orders-1",
+                    "seq": 1,
+                    "count": 0,
+                    "checksum": _qmt_snapshot_checksum(orders),
+                    "data": orders,
+                }
+            )
+            self.assertFalse(client.is_ready())
+
+            positions: list[dict] = []
+            client._handle_message(
+                {
+                    "type": "positions_data",
+                    "sync_mode": "full",
+                    "snapshot_id": "positions-1",
+                    "seq": 1,
+                    "count": 0,
+                    "checksum": _qmt_snapshot_checksum(
+                        positions,
+                        {"available_cash": 10000.0},
+                    ),
+                    "available_cash": 10000.0,
+                    "data": positions,
+                }
+            )
+            self.assertTrue(client.is_ready())
+            self.assertEqual(client.status_text(), "已连接")
+        client.close()
+
+    def test_qmt_rejects_bad_delta_and_requests_orders_full_sync(self) -> None:
+        client = QmtBackendClient("QMT-test", "127.0.0.1", 9527)
+        initial_orders = [{"order_id": "1001", "code": "159518.SZ"}]
+        client._handle_message(
+            {
+                "type": "orders_data",
+                "sync_mode": "full",
+                "snapshot_id": "orders-1",
+                "seq": 7,
+                "count": 1,
+                "checksum": _qmt_snapshot_checksum(_qmt_sorted_orders(initial_orders)),
+                "data": initial_orders,
+            }
+        )
+        with patch.object(client, "is_connected", return_value=True), patch.object(
+            client, "_send_json", return_value=True
+        ) as send:
+            client._handle_message(
+                {
+                    "type": "orders_data",
+                    "sync_mode": "delta",
+                    "snapshot_id": "wrong-snapshot",
+                    "seq": 999,
+                    "count": 2,
+                    "checksum": "bad",
+                    "upserts": [{"order_id": "unexpected", "code": "159518.SZ"}],
+                    "remove_ids": [],
+                }
+            )
+        self.assertEqual(set(client.orders_by_id), {"1001"})
+        self.assertFalse(client._orders_synced)
+        self.assertIn("序号不连续", client.last_error)
+        send.assert_called_once_with({"type": "sync_request", "target": "orders"})
+        client.close()
+
+    def test_qmt_etf_orders_are_throttled_for_five_seconds(self) -> None:
+        client = QmtBackendClient("QMT-test", "127.0.0.1", 9527)
+        with patch.object(client, "is_ready", return_value=True), patch.object(
+            client, "_send_json", return_value=True
+        ) as send, patch("etf_remote_client.time.monotonic", return_value=100.0):
+            self.assertTrue(client.send_etf_order("159518", "PURCHASE"))
+            self.assertFalse(client.send_etf_order("159518", "REDEEM"))
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("操作过快", client.last_error)
+
+        with patch.object(client, "is_ready", return_value=True), patch.object(
+            client, "_send_json", return_value=True
+        ) as send, patch("etf_remote_client.time.monotonic", return_value=105.01):
+            self.assertTrue(client.send_etf_order("159518", "REDEEM"))
+        send.assert_called_once()
+        client.close()
+
+    def test_qmt_heartbeat_marks_silent_backend_for_reconnect(self) -> None:
+        client = QmtBackendClient("QMT-test", "127.0.0.1", 9527)
+        client.want_connection = True
+        client.connection_state = "ready"
+        client._last_backend_message_at = 1.0
+        with patch.object(client, "is_connected", return_value=True), patch(
+            "etf_remote_client.time.monotonic", return_value=17.0
+        ):
+            client._heartbeat_tick()
+        self.assertEqual(client.connection_state, "reconnecting")
+        self.assertIn("无响应", client.last_error)
+        client.reconnect_timer.stop()
+        client.close()
 
     def test_web_client_has_local_net_creation_quota_column(self) -> None:
         source_html = resource_path("web", "monitor.html").read_text(encoding="utf-8")

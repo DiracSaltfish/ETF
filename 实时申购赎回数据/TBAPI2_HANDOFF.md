@@ -136,7 +136,7 @@ cd "/Users/ellis/Desktop/ETF交割/实时申购赎回数据"
 - 服务器监听 `0.0.0.0:6787`，向内网提供全量拉取、变化推送和心跳；观察列表更新、启停和 PCF 刷新只允许 `127.0.0.1/::1`。按用户要求不使用令牌。
 - `web/monitor.html` 可直接由浏览器访问，支持声音、系统通知和自动重连。
 - `etf_remote_client.py` 是跨平台 PyQt6 客户端，Mac/Windows 均可运行，断线自动重连并在客户端本地弹窗/响铃。
-- 计划任务默认工作日 `09:10–15:00`（Asia/Shanghai）。Wind 进程重启后会把状态改为 `reconnecting`，在计划时段自动重建订阅。
+- 计划任务默认工作日 `09:15–15:00`（Asia/Shanghai）。Wind 进程重启后会把状态改为 `reconnecting`，在计划时段自动重建订阅。
 - 观察列表持久化；技术日志单独保存在 Application Support，不显示在主页。
 
 实机/构建验证：

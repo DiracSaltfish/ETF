@@ -10,7 +10,7 @@
   },
   "schedule": {
     "enabled": true,
-    "policy_version": 3,
+    "policy_version": 4,
     "timezone": "Asia/Shanghai",
     "weekdays": [
       0,
@@ -19,7 +19,7 @@
       3,
       4
     ],
-    "start": "09:10",
+    "start": "09:15",
     "stop": "15:00"
   },
   "pcf": {

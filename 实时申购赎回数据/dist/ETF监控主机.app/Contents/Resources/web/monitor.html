@@ -68,21 +68,16 @@
     <input id="soundRepeat" type="number" min="1" max="10" value="3" style="min-width:74px;width:74px" title="轻亮三音每次含 3 响，默认重复 3 次，共 9 响">
     <button id="notify">允许系统通知</button>
     <span class="grow"></span>
-    <span id="socketStatus" class="dot offline">连接中</span>
-  </section>
-
-  <section class="card toolbar">
-    <span class="muted">只读客户端 · 观察列表与监控由 Mac-home 主机管理</span>
-    <span class="grow"></span>
     <span id="summary" class="muted">等待全量数据</span>
+    <span id="socketStatus" class="dot offline">连接中</span>
   </section>
 
   <section class="card table-wrap">
     <table>
       <thead><tr>
-        <th>标的</th><th>状态</th><th>申购笔数</th><th>申购份额</th>
-        <th>赎回笔数</th><th>赎回份额</th><th>轧差份额</th>
-        <th>机会判断</th><th>更新时间</th><th>最近变化</th>
+        <th>标的</th><th>名称</th><th>主机状态</th><th>申购份额</th><th>赎回份额</th>
+        <th>轧差份额</th><th>申购篮子</th><th>赎回篮子</th><th>轧差篮子</th>
+        <th>申购额度</th><th>机会判断</th><th>更新时间</th><th>最近变化</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -107,10 +102,23 @@
   const $ = id => document.getElementById(id);
   const fmt = (v,signed=false) => {
     if (v === null || v === undefined) return '—';
-    const n = Number(v); const text = Math.abs(n).toLocaleString('zh-CN');
+    const n = Number(v); if(!Number.isFinite(n)) return '—';
+    const digits=String(Math.abs(Math.round(n)));
+    const parts=[]; for(let end=digits.length;end>0;end-=4) parts.unshift(digits.slice(Math.max(0,end-4),end));
+    const text=parts.join(' ');
     if (signed && n > 0) return '+' + text;
     if (n < 0) return '-' + text;
     return text;
+  };
+  const baskets = (item,field,signed=false) => {
+    const pcf=item.pcf||{}, values=item.values||{};
+    const amount=Number(values[field]), unit=Number(pcf.creation_redemption_unit);
+    if(pcf.status!=='ready'||values[field]===null||values[field]===undefined||
+       !Number.isFinite(amount)||!Number.isFinite(unit)||unit<=0) return '待确认';
+    const count=amount/unit, rounded=Math.round(count);
+    if(Math.abs(count-rounded)<1e-9) return fmt(rounded,signed);
+    const text=Math.abs(count).toFixed(2).replace(/\.?0+$/,'');
+    return count<0?`-${text}`:signed&&count>0?`+${text}`:text;
   };
   const esc = s => String(s ?? '').replace(/[&<>"']/g,c=>({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -124,19 +132,48 @@
     return text.slice(0,8);
   };
 
+  function creationQuota(item) {
+    const pcf=item.pcf||{}, values=item.values||{};
+    const creation=Number(values.etfbuyamount), net=Number(values.netamount);
+    const creationLimit=Number(pcf.creation_limit), netLimit=Number(pcf.net_creation_limit);
+    if(values.etfbuyamount===null||values.etfbuyamount===undefined||!Number.isFinite(creation)||
+       values.netamount===null||values.netamount===undefined||!Number.isFinite(net))
+      return {label:'待确认',className:'',reason:'实时申购份额或轧差份额尚未就绪'};
+    if(pcf.status!=='ready')
+      return {label:'待确认',className:'',reason:'当日 PCF 尚未就绪'};
+    if(pcf.creation_limit===null||pcf.creation_limit===undefined||!Number.isFinite(creationLimit)||
+       pcf.net_creation_limit===null||pcf.net_creation_limit===undefined||!Number.isFinite(netLimit))
+      return {label:'待确认',className:'',reason:'PCF 的累计或净申购上限字段不完整'};
+    if(creationLimit>0&&creation>=creationLimit)
+      return {label:'已满',className:'negative',reason:`当前累计申购 ${fmt(creation)}，已达到 PCF 累计上限 ${fmt(creationLimit)}`};
+    if(netLimit>0&&net>=netLimit)
+      return {label:'已满',className:'negative',reason:`当前净申购 ${fmt(net)}，已达到 PCF 净申购上限 ${fmt(netLimit)}`};
+    if(pcf.creation_allowed===false)
+      return {label:'申购关闭',className:'negative',reason:'PCF 明确关闭申购'};
+    const constraints=[];
+    if(creationLimit>0) constraints.push(['累计',Math.max(0,creationLimit-creation)]);
+    if(netLimit>0) constraints.push(['净申购',Math.max(0,netLimit-net)]);
+    if(!constraints.length)
+      return {label:'未满',className:'positive',reason:'PCF 未设置正数累计申购或净申购上限'};
+    constraints.sort((a,b)=>a[1]-b[1]);
+    return {label:'未满',className:'positive',reason:`累计申购 ${fmt(creation)}，净申购 ${fmt(net)}；距离 PCF ${constraints[0][0]}限额还剩 ${fmt(constraints[0][1])}`};
+  }
+
   function render() {
     const symbols = [...state.items.keys()].sort();
     $('rows').innerHTML = symbols.map(symbol => {
       const item=state.items.get(symbol), v=item.values||{};
       const net=v.netamount===null||v.netamount===undefined?null:Number(v.netamount);
       const opportunity=item.opportunity||{};
+      const quota=creationQuota(item);
       const change=(item.last_change||[]).map(x=>x.text).join('；') || '—';
       const netClass=net!==null&&net>0?'positive':net!==null&&net<0?'negative':'';
       const opportunityClass=opportunity.kind==='creation'?'positive':opportunity.kind==='redemption'?'negative':'';
       return `<tr data-symbol="${esc(symbol)}"><td><b>${esc(symbol)}</b></td>
-        <td>${esc(statusText(item.status))}</td><td>${fmt(v.etfbuynumber)}</td>
-        <td>${fmt(v.etfbuyamount)}</td><td>${fmt(v.etfsellnumber)}</td>
-        <td>${fmt(v.etfsellamount)}</td><td class="${netClass}">${fmt(net,true)}</td>
+        <td>${esc(item.name||'—')}</td><td>${esc(statusText(item.status))}</td>
+        <td>${fmt(v.etfbuyamount)}</td><td>${fmt(v.etfsellamount)}</td><td class="${netClass}">${fmt(net,true)}</td>
+        <td>${baskets(item,'etfbuyamount')}</td><td>${baskets(item,'etfsellamount')}</td><td class="${netClass}">${baskets(item,'netamount',true)}</td>
+        <td class="${quota.className}" title="${esc(quota.reason)}">${esc(quota.label)}</td>
         <td class="${opportunityClass}">${esc(opportunity.label||'待确认')}</td>
         <td>${esc(timeOnly(item.updated_at))}</td><td class="change">${esc(change)}</td></tr>`;
     }).join('');
@@ -180,7 +217,9 @@
     const messages=[];
     (event.items||[]).forEach(changed=>{
       if(changed.current) state.items.set(String(changed.symbol),changed.current);
-      messages.push(`${changed.symbol}：${(changed.changes||[]).map(x=>x.text).join('；')}`);
+      const name=String(changed.current?.name||'').trim();
+      const identity=name?`${changed.symbol}  ${name}`:changed.symbol;
+      messages.push(`${identity}：${(changed.changes||[]).map(x=>x.text).join('；')}`);
     });
     render(); if(!messages.length) return;
     const message=messages.join('\n'); toast(message); beep();
@@ -214,7 +253,7 @@
     try {
       const payload=await api(`/api/v1/pcf/${encodeURIComponent(symbol)}`);
       const opportunity=payload.opportunity||{};
-      $('pcfTitle').textContent=`${payload.symbol||symbol}  ${payload.fund_name||''} · PCF ${payload.trading_day||'—'}`;
+      $('pcfTitle').textContent=`${payload.symbol||symbol}  ${payload.name||payload.fund_name||''} · PCF ${payload.trading_day||'—'}`;
       $('pcfSignal').textContent=`判断：${opportunity.label||'待确认'} · ${opportunity.reason||''}`;
       $('pcfSignal').className=opportunity.kind==='creation'?'positive':opportunity.kind==='redemption'?'negative':'muted';
       $('pcfSummary').innerHTML=(payload.summary_fields||[]).map(field=>

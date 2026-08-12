@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
+from PyQt6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtNetwork import (
@@ -18,6 +20,7 @@ from PyQt6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
     QNetworkRequest,
+    QTcpSocket,
 )
 from PyQt6.QtWebSockets import QWebSocket
 from PyQt6.QtWidgets import (
@@ -57,6 +60,554 @@ PRESET_SOUNDS = (
     ("soft", "柔和提示", "soft.wav"),
     ("external", "外部音频文件", ""),
 )
+
+QMT_BACKENDS: dict[str, tuple[str, int]] = {
+    "QMT1": ("192.168.1.112", 9527),
+    "QMT2": ("192.168.1.111", 9527),
+}
+QMT_ORDER_THROTTLE_SECONDS = 5.0
+QMT_HEARTBEAT_INTERVAL_MS = 5_000
+QMT_BACKEND_SILENCE_SECONDS = 15.0
+
+
+def qmt_etf_code(symbol: str) -> str:
+    """Return a six-digit ETF symbol in the QMT ``code.exchange`` format."""
+
+    clean = str(symbol or "").strip().upper()
+    if "." in clean:
+        code, exchange = clean.rsplit(".", 1)
+        if len(code) == 6 and code.isdigit() and exchange in {"SH", "SZ"}:
+            return f"{code}.{exchange}"
+    if len(clean) != 6 or not clean.isdigit():
+        raise ValueError("ETF 代码必须是 6 位数字或标准 QMT 代码")
+    # ETF 5/6/9 段在上海，其余常用 ETF 代码（15/16/18）在深圳。
+    exchange = "SH" if clean.startswith(("5", "6", "9")) else "SZ"
+    return f"{clean}.{exchange}"
+
+
+class DoubleClickButton(QPushButton):
+    """A visible action button whose connected action only fires on double click."""
+
+    doubleClicked = pyqtSignal()
+
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+def _qmt_snapshot_checksum(data: list[dict[str, Any]], extra: dict[str, Any] | None = None) -> str:
+    payload = {"data": data, "extra": extra or {}}
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+
+
+def _qmt_order_time_sort_key(value: Any) -> tuple[int, int, int]:
+    text = str(value or "").strip()
+    if not text:
+        return (0, 0, 0)
+    match = re.search(r"(\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d+))?", text)
+    if match:
+        hour_text, minute_text, second_text, fraction_text = match.groups()
+    else:
+        digits = "".join(character for character in text if character.isdigit())
+        if len(digits) >= 14:
+            hour_text, minute_text, second_text = digits[-6:-4], digits[-4:-2], digits[-2:]
+            fraction_text = ""
+        elif len(digits) >= 6:
+            hour_text, minute_text, second_text = digits[:2], digits[2:4], digits[4:6]
+            fraction_text = digits[6:]
+        else:
+            return (0, 0, 0)
+    try:
+        hour, minute, second = int(hour_text), int(minute_text), int(second_text)
+    except (TypeError, ValueError):
+        return (0, 0, 0)
+    if hour > 23 or minute > 59 or second > 59:
+        return (0, 0, 0)
+    fraction_digits = "".join(
+        character for character in str(fraction_text or "") if character.isdigit()
+    )[:6]
+    fraction = int(fraction_digits.ljust(6, "0")) if fraction_digits else 0
+    return (1, hour * 3600 + minute * 60 + second, fraction)
+
+
+def _qmt_order_sort_key(order: dict[str, Any]) -> tuple[Any, ...]:
+    order_id = str(order.get("order_id") or "").strip()
+    numeric_order_id = order_id.isdigit()
+    try:
+        sort_sequence = int(order.get("sort_seq") or 0)
+    except (TypeError, ValueError):
+        sort_sequence = 0
+    return (
+        *_qmt_order_time_sort_key(order.get("time")),
+        numeric_order_id,
+        int(order_id) if numeric_order_id else 0,
+        order_id,
+        sort_sequence,
+    )
+
+
+def _qmt_sorted_orders(orders: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(orders, list) or any(not isinstance(order, dict) for order in orders):
+        return None
+    return sorted(orders, key=_qmt_order_sort_key, reverse=True)
+
+
+def _qmt_sorted_positions(positions: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(positions, list) or any(
+        not isinstance(position, dict) for position in positions
+    ):
+        return None
+    return sorted(positions, key=lambda position: str(position.get("code") or "").strip())
+
+
+def _qmt_protocol_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text.lstrip("+").isdigit():
+            return int(text)
+    return None
+
+
+class QmtBackendClient(QObject):
+    """One newline-delimited JSON connection to a QMT socket backend.
+
+    The backend owns polling and pushes the order/position streams after a
+    ``sync_request``.  This class keeps the protocol state separate from the
+    ETF monitoring WebSocket, so either QMT connection can fail or reconnect
+    without disturbing the monitoring client.
+    """
+
+    state_changed = pyqtSignal()
+
+    def __init__(self, name: str, host: str, port: int, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.name = name
+        self.host = host
+        self.port = port
+        self.socket = QTcpSocket(self)
+        self.want_connection = False
+        self.buffer = b""
+        self.available_cash: float | None = None
+        self.orders_by_id: dict[str, dict[str, Any]] = {}
+        self.positions: list[dict[str, Any]] = []
+        self.last_result: dict[str, Any] = {}
+        self.last_error = ""
+        self.connection_state = "disconnected"
+        self._welcome_received = False
+        self._orders_synced = False
+        self._positions_synced = False
+        self._orders_snapshot_id = ""
+        self._orders_seq: int | None = None
+        self._positions_snapshot_id = ""
+        self._positions_seq: int | None = None
+        self._last_backend_message_at = 0.0
+        self._last_etf_order_at = 0.0
+
+        self.reconnect_timer = QTimer(self)
+        self.reconnect_timer.setInterval(5_000)
+        self.reconnect_timer.setSingleShot(True)
+        self.reconnect_timer.timeout.connect(self._try_reconnect)
+        self.heartbeat_timer = QTimer(self)
+        self.heartbeat_timer.setInterval(QMT_HEARTBEAT_INTERVAL_MS)
+        self.heartbeat_timer.timeout.connect(self._heartbeat_tick)
+        self.throttle_timer = QTimer(self)
+        self.throttle_timer.setSingleShot(True)
+        self.throttle_timer.timeout.connect(self.state_changed.emit)
+
+        self.socket.connected.connect(self._on_connected)
+        self.socket.disconnected.connect(self._on_disconnected)
+        self.socket.readyRead.connect(self._on_ready_read)
+        self.socket.errorOccurred.connect(self._on_error)
+
+    def is_connected(self) -> bool:
+        return self.socket.state() == QAbstractSocket.SocketState.ConnectedState
+
+    def is_ready(self) -> bool:
+        return self.is_connected() and self.connection_state == "ready"
+
+    def status_text(self) -> str:
+        if self.is_ready():
+            return "已连接"
+        if self.connection_state == "syncing":
+            return "同步中…"
+        if self.connection_state == "reconnecting":
+            return "重连中…"
+        if self.connection_state == "connecting" or self.socket.state() in {
+                QAbstractSocket.SocketState.HostLookupState,
+                QAbstractSocket.SocketState.ConnectingState,
+            }:
+            return "正在连接…"
+        return "未连接"
+
+    def throttle_remaining(self) -> float:
+        if self._last_etf_order_at <= 0:
+            return 0.0
+        return max(
+            0.0,
+            QMT_ORDER_THROTTLE_SECONDS - (time.monotonic() - self._last_etf_order_at),
+        )
+
+    def connect_backend(self) -> None:
+        self.want_connection = True
+        self.last_error = ""
+        if self.is_connected():
+            if self.is_ready():
+                self.request_sync()
+            self.state_changed.emit()
+            return
+        if self.socket.state() != QAbstractSocket.SocketState.UnconnectedState:
+            self.socket.abort()
+        self.connection_state = "connecting"
+        self.socket.connectToHost(self.host, self.port)
+        self.state_changed.emit()
+
+    def disconnect_backend(self) -> None:
+        self.want_connection = False
+        self.reconnect_timer.stop()
+        self.heartbeat_timer.stop()
+        self.connection_state = "disconnected"
+        self._reset_sync_state()
+        self.buffer = b""
+        self.socket.disconnectFromHost()
+        if self.socket.state() != QAbstractSocket.SocketState.UnconnectedState:
+            self.socket.close()
+        self.state_changed.emit()
+
+    def close(self) -> None:
+        self.disconnect_backend()
+
+    def request_sync(self) -> None:
+        self._send_json({"type": "query_status"})
+        self._send_json({"type": "sync_request", "target": "all"})
+
+    def send_etf_order(self, symbol: str, action: str) -> bool:
+        if not self.is_ready():
+            self.last_error = f"{self.name} 尚未完成连接和数据同步"
+            self.state_changed.emit()
+            return False
+        remaining = self.throttle_remaining()
+        if remaining > 0:
+            self.last_error = f"{self.name} 操作过快，请 {remaining:.1f} 秒后再试"
+            self.state_changed.emit()
+            return False
+        try:
+            code = qmt_etf_code(symbol)
+        except ValueError as exc:
+            self.last_error = str(exc)
+            self.state_changed.emit()
+            return False
+        normalized_action = str(action).strip().upper()
+        if normalized_action not in {"PURCHASE", "REDEEM"}:
+            self.last_error = "ETF 操作必须是申购或赎回"
+            self.state_changed.emit()
+            return False
+        action_code = "P" if normalized_action == "PURCHASE" else "R"
+        client_order_id = (
+            f"ETF-{self.name}-{action_code}-{code.split('.', 1)[0]}-"
+            f"{int(time.time() * 1000)}"
+        )
+        sent = self._send_json(
+            {
+                "type": "etf_order",
+                "action": normalized_action,
+                "code": code,
+                "qty": 1,
+                "client_order_id": client_order_id,
+            }
+        )
+        if sent:
+            self._last_etf_order_at = time.monotonic()
+            self.throttle_timer.start(int(QMT_ORDER_THROTTLE_SECONDS * 1000) + 25)
+            self.last_error = ""
+            self.last_result = {
+                "pending": True,
+                "action": normalized_action,
+                "code": code,
+                "qty": 1,
+                "client_order_id": client_order_id,
+                "message": "指令已发送，等待 QMT 后端确认",
+            }
+        self.state_changed.emit()
+        return sent
+
+    def orders_for_symbol(self, symbol: str) -> list[dict[str, Any]]:
+        target = qmt_etf_code(symbol).split(".", 1)[0]
+        return [
+            order
+            for order in self.orders_by_id.values()
+            if str(order.get("code") or "").split(".", 1)[0] == target
+        ]
+
+    def _on_connected(self) -> None:
+        self.reconnect_timer.stop()
+        self.buffer = b""
+        self._reset_sync_state()
+        self.connection_state = "syncing"
+        self._last_backend_message_at = time.monotonic()
+        self.heartbeat_timer.start()
+        self.last_error = ""
+        self._send_ping()
+        self.request_sync()
+        self.state_changed.emit()
+
+    def _on_disconnected(self) -> None:
+        self.heartbeat_timer.stop()
+        self.buffer = b""
+        self._last_backend_message_at = 0.0
+        self._reset_sync_state()
+        if self.want_connection:
+            self.connection_state = "reconnecting"
+            self.reconnect_timer.start()
+        else:
+            self.connection_state = "disconnected"
+        self.state_changed.emit()
+
+    def _on_error(self, _error: Any) -> None:
+        self.last_error = self.socket.errorString()
+        if self.want_connection:
+            self.connection_state = "reconnecting"
+            if self.socket.state() == QAbstractSocket.SocketState.UnconnectedState:
+                self.reconnect_timer.start()
+        self.state_changed.emit()
+
+    def _try_reconnect(self) -> None:
+        if self.want_connection and not self.is_connected():
+            self.connect_backend()
+
+    def _send_ping(self) -> None:
+        self._send_json({"type": "ping"})
+
+    def _heartbeat_tick(self) -> None:
+        if not self.is_connected():
+            return
+        silence = time.monotonic() - self._last_backend_message_at
+        if self._last_backend_message_at > 0 and silence > QMT_BACKEND_SILENCE_SECONDS:
+            self.last_error = f"{self.name} 后端 {silence:.0f} 秒无响应，正在重连"
+            self.connection_state = "reconnecting"
+            self.heartbeat_timer.stop()
+            self.buffer = b""
+            self.socket.abort()
+            if self.want_connection and self.socket.state() == QAbstractSocket.SocketState.UnconnectedState:
+                self.reconnect_timer.start()
+            self.state_changed.emit()
+            return
+        self._send_ping()
+
+    def _send_json(self, message: dict[str, Any]) -> bool:
+        if not self.is_connected():
+            return False
+        wire = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
+        if self.socket.write(wire) < 0:
+            self.last_error = self.socket.errorString()
+            return False
+        return True
+
+    def _on_ready_read(self) -> None:
+        self.buffer += bytes(self.socket.readAll())
+        while b"\n" in self.buffer:
+            raw_line, self.buffer = self.buffer.split(b"\n", 1)
+            if not raw_line.strip():
+                continue
+            try:
+                message = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self.last_error = "QMT 后端返回了无法解析的 JSON 数据"
+                self.state_changed.emit()
+                continue
+            if isinstance(message, dict):
+                self._handle_message(message)
+
+    def _reset_sync_state(self) -> None:
+        self._welcome_received = False
+        self._orders_synced = False
+        self._positions_synced = False
+        self._orders_snapshot_id = ""
+        self._orders_seq = None
+        self._positions_snapshot_id = ""
+        self._positions_seq = None
+
+    def _maybe_mark_ready(self) -> None:
+        if (
+            self.is_connected()
+            and self._welcome_received
+            and self._orders_synced
+            and self._positions_synced
+        ):
+            self.connection_state = "ready"
+            self.last_error = ""
+
+    def _reject_sync(self, stream: str, reason: str) -> None:
+        self.last_error = reason
+        if stream == "orders":
+            self._orders_synced = False
+        else:
+            self._positions_synced = False
+        if self.is_connected():
+            self.connection_state = "syncing"
+            self._send_json({"type": "sync_request", "target": stream})
+
+    def _validate_meta(
+        self,
+        message: dict[str, Any],
+        data: list[dict[str, Any]],
+        checksum_data: list[dict[str, Any]],
+        *,
+        extra: dict[str, Any] | None = None,
+    ) -> tuple[str, int] | None:
+        snapshot_id = str(message.get("snapshot_id") or "").strip()
+        sequence = _qmt_protocol_int(message.get("seq"))
+        count = _qmt_protocol_int(message.get("count"))
+        expected_checksum = str(message.get("checksum") or "").strip().lower()
+        if not snapshot_id or sequence is None or sequence < 0:
+            return None
+        if count is None or count != len(data):
+            return None
+        if not expected_checksum or expected_checksum != _qmt_snapshot_checksum(checksum_data, extra):
+            return None
+        return snapshot_id, sequence
+
+    def _handle_positions(self, message: dict[str, Any]) -> None:
+        if message.get("sync_mode") == "error":
+            self._reject_sync(
+                "positions", str(message.get("error") or "QMT 持仓同步失败")
+            )
+            return
+        if message.get("sync_mode") != "full":
+            self._reject_sync("positions", "QMT 持仓同步模式无效，正在请求全量同步")
+            return
+        data = _qmt_sorted_positions(message.get("data"))
+        cash = message.get("available_cash")
+        if (
+            data is None
+            or not isinstance(cash, (int, float))
+            or isinstance(cash, bool)
+        ):
+            self._reject_sync("positions", "QMT 持仓数据格式无效，正在请求全量同步")
+            return
+        meta = self._validate_meta(
+            message,
+            data,
+            data,
+            extra={"available_cash": cash},
+        )
+        if meta is None:
+            self._reject_sync("positions", "QMT 持仓全量校验失败，正在重新同步")
+            return
+        self.positions = data
+        self.available_cash = float(cash)
+        self._positions_snapshot_id, self._positions_seq = meta
+        self._positions_synced = True
+        self._maybe_mark_ready()
+
+    def _handle_orders(self, message: dict[str, Any]) -> None:
+        mode = str(message.get("sync_mode") or "").lower()
+        if mode == "error":
+            self._reject_sync("orders", str(message.get("error") or "QMT 委托同步失败"))
+            return
+        if mode == "full":
+            data = _qmt_sorted_orders(message.get("data"))
+            if data is None:
+                self._reject_sync("orders", "QMT 委托数据格式无效，正在请求全量同步")
+                return
+            next_orders: dict[str, dict[str, Any]] = {}
+            for order in data:
+                order_id = str(order.get("order_id") or "").strip()
+                if not order_id or order_id in next_orders:
+                    self._reject_sync("orders", "QMT 委托号缺失或重复，正在请求全量同步")
+                    return
+                next_orders[order_id] = order
+            meta = self._validate_meta(message, data, data)
+            if meta is None:
+                self._reject_sync("orders", "QMT 委托全量校验失败，正在重新同步")
+                return
+            self.orders_by_id = next_orders
+            self._orders_snapshot_id, self._orders_seq = meta
+            self._orders_synced = True
+            self._maybe_mark_ready()
+            return
+        if mode != "delta":
+            self._reject_sync("orders", "QMT 委托同步模式无效，正在请求全量同步")
+            return
+        snapshot_id = str(message.get("snapshot_id") or "").strip()
+        sequence = _qmt_protocol_int(message.get("seq"))
+        if (
+            not self._orders_synced
+            or not self._orders_snapshot_id
+            or snapshot_id != self._orders_snapshot_id
+            or self._orders_seq is None
+            or sequence != self._orders_seq + 1
+        ):
+            self._reject_sync("orders", "QMT 委托增量缺少基础快照或序号不连续，正在重新同步")
+            return
+        upserts = message.get("upserts")
+        remove_ids = message.get("remove_ids")
+        if not isinstance(upserts, list) or not isinstance(remove_ids, list):
+            self._reject_sync("orders", "QMT 委托增量格式无效，正在重新同步")
+            return
+        next_orders = dict(self.orders_by_id)
+        for order in upserts:
+            if not isinstance(order, dict):
+                self._reject_sync("orders", "QMT 委托增量格式无效，正在重新同步")
+                return
+            order_id = str(order.get("order_id") or "").strip()
+            if not order_id:
+                self._reject_sync("orders", "QMT 委托增量缺少委托号，正在重新同步")
+                return
+            next_orders[order_id] = order
+        for order_id in remove_ids:
+            next_orders.pop(str(order_id), None)
+        checksum_data = sorted(next_orders.values(), key=_qmt_order_sort_key, reverse=True)
+        meta = self._validate_meta(message, checksum_data, checksum_data)
+        if meta is None:
+            self._reject_sync("orders", "QMT 委托增量数量或校验和不一致，正在重新同步")
+            return
+        self.orders_by_id = next_orders
+        self._orders_snapshot_id, self._orders_seq = meta
+        self._orders_synced = True
+        self._maybe_mark_ready()
+
+    def _handle_message(self, message: dict[str, Any]) -> None:
+        self._last_backend_message_at = time.monotonic()
+        message_type = str(message.get("type") or "")
+        if message_type == "welcome":
+            if message.get("push_sync") is True:
+                self._welcome_received = True
+                self._maybe_mark_ready()
+            else:
+                self.last_error = "QMT 后端不支持所需的推送同步协议"
+                if self.is_connected():
+                    self.connection_state = "syncing"
+        elif message_type == "positions_data":
+            self._handle_positions(message)
+        elif message_type == "orders_data":
+            self._handle_orders(message)
+        elif message_type == "etf_order_result":
+            self.last_result = message
+            if not message.get("success"):
+                self.last_error = str(message.get("error") or "ETF 申赎指令被后端拒绝")
+            else:
+                self.last_error = ""
+                self.request_sync()
+        elif message_type == "error":
+            self.last_error = str(message.get("detail") or message.get("error") or "QMT 后端错误")
+        self.state_changed.emit()
 
 
 def resource_path(*parts: str) -> Path:
@@ -303,32 +854,79 @@ class PcfDetailDialog(QDialog):
         parent: QWidget | None = None,
         *,
         name_save_callback: Any | None = None,
+        qmt_clients: dict[str, QmtBackendClient] | None = None,
     ) -> None:
         super().__init__(parent)
         symbol = str(payload.get("symbol") or "")
         self.symbol = symbol
         self.name_save_callback = name_save_callback
+        self.qmt_clients = qmt_clients or {}
+        self.qmt_tabs: dict[str, dict[str, Any]] = {}
+        self.setObjectName("pcfDetailDialog")
         self.setWindowTitle(f"{symbol} PCF 详细信息")
         self.resize(1120, 720)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 22)
+        layout.setSpacing(16)
+        self.setStyleSheet(
+            """
+            QDialog#pcfDetailDialog { background: #f5f7fa; }
+            QDialog#pcfDetailDialog QLabel { color: #253044; background: transparent; }
+            QTabWidget#pcfDetailTabs::pane {
+                background: white; border: 1px solid #dce3ec; border-radius: 10px;
+                top: -1px;
+            }
+            QTabWidget#pcfDetailTabs QTabBar::tab {
+                color: #526074; background: #edf2f7; border: 1px solid #dce3ec;
+                border-bottom: 0; border-top-left-radius: 8px; border-top-right-radius: 8px;
+                min-width: 132px; min-height: 28px; margin-right: 7px; padding: 8px 18px;
+                font-size: 15px; font-weight: 700;
+            }
+            QTabWidget#pcfDetailTabs QTabBar::tab:hover { background: #e0e9f5; color: #2f6feb; }
+            QTabWidget#pcfDetailTabs QTabBar::tab:selected {
+                color: white; background: #2f6feb; border-color: #2f6feb;
+            }
+            QWidget#qmtTradePage { background: transparent; }
+            QFrame#qmtTradeCard {
+                background: white; border: 1px solid #dce3ec; border-radius: 10px;
+            }
+            QLabel#qmtConnectionStatus { font-size: 17px; font-weight: 700; }
+            QLabel#qmtCash { color: #526f8e; font-size: 16px; font-weight: 600; }
+            QLabel#qmtResult { font-size: 15px; }
+            QPushButton#qmtPurchaseButton {
+                color: white; background: #168553; border: 1px solid #168553;
+                border-radius: 10px; padding: 14px 30px; font-size: 19px; font-weight: 700;
+            }
+            QPushButton#qmtPurchaseButton:hover { background: #0f6c42; }
+            QPushButton#qmtRedeemButton {
+                color: white; background: #c53b45; border: 1px solid #c53b45;
+                border-radius: 10px; padding: 14px 30px; font-size: 19px; font-weight: 700;
+            }
+            QPushButton#qmtRedeemButton:hover { background: #aa2733; }
+            QPushButton#pcfCloseButton {
+                color: #253044; background: white; border: 1px solid #cbd5e1;
+                border-radius: 7px; padding: 9px 20px; font-weight: 600;
+            }
+            QPushButton#pcfCloseButton:hover { background: #eef3f9; }
+            QTableWidget {
+                color: #172033; background: white; border: 1px solid #dce3ec;
+                border-radius: 8px; gridline-color: #e2e8f0; font-size: 14px;
+            }
+            QTableWidget::item { padding: 7px; }
+            QHeaderView::section {
+                background: #eef2f7; color: #526074; border: none;
+                border-right: 1px solid #dce3ec; border-bottom: 1px solid #dce3ec;
+                padding: 9px; font-size: 14px; font-weight: 700;
+            }
+            """
+        )
 
         heading = QLabel(
             f"{symbol}  {payload.get('name') or payload.get('fund_name') or ''}  ·  "
             f"PCF {payload.get('trading_day') or '—'}"
         )
         heading.setStyleSheet("font-size: 18px; font-weight: 700; color: #172033;")
-        opportunity = payload.get("opportunity") or {}
-        signal = QLabel(
-            f"判断：{opportunity.get('label') or '待确认'}  ·  {opportunity.get('reason') or ''}"
-        )
-        signal.setWordWrap(True)
-        kind = str(opportunity.get("kind") or "")
-        signal.setStyleSheet(
-            "font-weight: 600; color: "
-            + ("#168553;" if kind == "creation" else "#c53b45;" if kind == "redemption" else "#68758a;")
-        )
         layout.addWidget(heading)
-        layout.addWidget(signal)
 
         if self.name_save_callback is not None:
             name_row = QHBoxLayout()
@@ -343,6 +941,8 @@ class PcfDetailDialog(QDialog):
             layout.addLayout(name_row)
 
         tabs = QTabWidget()
+        tabs.setObjectName("pcfDetailTabs")
+        tabs.tabBar().setExpanding(False)
         summary = payload.get("summary_fields") or []
         summary_table = QTableWidget(len(summary), 2)
         summary_table.setHorizontalHeaderLabels(["字段", "值"])
@@ -369,6 +969,10 @@ class PcfDetailDialog(QDialog):
                 field = str(descriptor.get("field") or "")
                 component_table.setItem(row, column, QTableWidgetItem(str(component.get(field) or "")))
         tabs.addTab(component_table, f"成分证券（{len(components)}）")
+
+        for backend_name, client in self.qmt_clients.items():
+            tabs.addTab(self._build_qmt_tab(backend_name, client), backend_name)
+            client.state_changed.connect(self._refresh_qmt_tabs)
         layout.addWidget(tabs, 1)
 
         if payload.get("error"):
@@ -377,8 +981,156 @@ class PcfDetailDialog(QDialog):
             error.setStyleSheet("color: #c53b45;")
             layout.addWidget(error)
         close_button = QPushButton("关闭")
+        close_button.setObjectName("pcfCloseButton")
         close_button.clicked.connect(self.close)
         layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+
+        self._refresh_qmt_tabs()
+
+    def _build_qmt_tab(self, backend_name: str, client: QmtBackendClient) -> QWidget:
+        page = QWidget()
+        page.setObjectName("qmtTradePage")
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(12, 12, 12, 12)
+        card = QFrame()
+        card.setObjectName("qmtTradeCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(16)
+
+        endpoint = f"{client.host}:{client.port}"
+        status = QLabel()
+        status.setObjectName("qmtConnectionStatus")
+        status.setWordWrap(True)
+        cash = QLabel()
+        cash.setObjectName("qmtCash")
+        result = QLabel()
+        result.setWordWrap(True)
+        result.setObjectName("qmtResult")
+        layout.addWidget(status)
+        layout.addWidget(cash)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(28)
+        purchase_button = DoubleClickButton("双击申购 1 篮子")
+        purchase_button.setObjectName("qmtPurchaseButton")
+        purchase_button.setMinimumSize(272, 68)
+        purchase_button.setToolTip(f"双击后向 {backend_name} 提交 {self.symbol} 的 1 个申购篮子")
+        purchase_button.doubleClicked.connect(
+            lambda name=backend_name: self._submit_qmt_order(name, "PURCHASE")
+        )
+        redeem_button = DoubleClickButton("双击赎回 1 篮子")
+        redeem_button.setObjectName("qmtRedeemButton")
+        redeem_button.setMinimumSize(272, 68)
+        redeem_button.setToolTip(f"双击后向 {backend_name} 提交 {self.symbol} 的 1 个赎回篮子")
+        redeem_button.doubleClicked.connect(
+            lambda name=backend_name: self._submit_qmt_order(name, "REDEEM")
+        )
+        action_row.addWidget(purchase_button)
+        action_row.addWidget(redeem_button)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+        layout.addWidget(result)
+
+        orders_title = QLabel("当日委托（当前标的）")
+        orders_title.setStyleSheet("font-weight: 700; color: #253044;")
+        orders_table = QTableWidget(0, 6)
+        orders_table.setHorizontalHeaderLabels(["时间", "方向", "状态", "委托量", "成交量", "委托号"])
+        orders_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        orders_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        orders_table.verticalHeader().setVisible(False)
+        orders_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        orders_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(orders_title)
+        layout.addWidget(orders_table, 1)
+        page_layout.addWidget(card)
+
+        self.qmt_tabs[backend_name] = {
+            "endpoint": endpoint,
+            "status": status,
+            "cash": cash,
+            "result": result,
+            "orders": orders_table,
+            "purchase": purchase_button,
+            "redeem": redeem_button,
+        }
+        return page
+
+    def _submit_qmt_order(self, backend_name: str, action: str) -> None:
+        client = self.qmt_clients[backend_name]
+        action_text = "申购" if action == "PURCHASE" else "赎回"
+        if not client.is_ready():
+            QMessageBox.warning(
+                self,
+                f"{backend_name} 尚未就绪",
+                f"请等待 {backend_name} 完成连接及委托、持仓同步，再双击{action_text}。",
+            )
+            return
+        if client.send_etf_order(self.symbol, action):
+            self._refresh_qmt_tabs()
+        else:
+            QMessageBox.warning(self, "指令未发送", client.last_error or "QMT 连接不可用")
+
+    def _refresh_qmt_tabs(self) -> None:
+        for backend_name, widgets in self.qmt_tabs.items():
+            client = self.qmt_clients[backend_name]
+            ready = client.is_ready()
+            state_text = client.status_text()
+            transitional = any(word in state_text for word in ("正在", "同步", "重连"))
+            state_color = "#168553" if ready else "#d97706" if transitional else "#c53b45"
+            widgets["status"].setText(
+                f"{backend_name} · {state_text} · {widgets['endpoint']}"
+            )
+            widgets["status"].setStyleSheet(f"font-weight: 700; color: {state_color};")
+            widgets["cash"].setText(
+                "可用资金："
+                + (f"¥{client.available_cash:,.2f}" if client.available_cash is not None else "等待后端同步")
+            )
+            can_submit = ready and client.throttle_remaining() <= 0
+            widgets["purchase"].setEnabled(can_submit)
+            widgets["redeem"].setEnabled(can_submit)
+
+            result = client.last_result
+            result_code = str(result.get("code") or "").split(".", 1)[0]
+            own_result = result if result_code == self.symbol.split(".", 1)[0] else {}
+            if own_result:
+                if own_result.get("pending"):
+                    result_text = str(own_result.get("message") or "指令已发送")
+                    result_color = "#d97706"
+                elif own_result.get("success"):
+                    result_text = str(own_result.get("message") or "ETF 指令已提交")
+                    result_color = "#168553"
+                else:
+                    result_text = str(own_result.get("error") or "ETF 指令失败")
+                    result_color = "#c53b45"
+                widgets["result"].setText(f"最近指令：{result_text}")
+                widgets["result"].setStyleSheet(f"font-weight: 600; color: {result_color};")
+            elif client.last_error:
+                widgets["result"].setText(f"后端提示：{client.last_error}")
+                widgets["result"].setStyleSheet("font-weight: 600; color: #c53b45;")
+            else:
+                widgets["result"].setText("最近指令：—")
+                widgets["result"].setStyleSheet("color: #68758a;")
+
+            orders = client.orders_for_symbol(self.symbol)
+            orders.sort(key=lambda order: str(order.get("time") or ""), reverse=True)
+            table: QTableWidget = widgets["orders"]
+            table.setRowCount(len(orders))
+            for row, order in enumerate(orders):
+                values = [
+                    str(order.get("time") or "—"),
+                    str(order.get("direction") or "—"),
+                    str(order.get("status") or "—"),
+                    str(order.get("qty") if order.get("qty") is not None else "—"),
+                    str(order.get("traded_qty") if order.get("traded_qty") is not None else "—"),
+                    str(order.get("order_id") or "—"),
+                ]
+                for column, value in enumerate(values):
+                    cell = QTableWidgetItem(value)
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+                    )
+                    table.setItem(row, column, cell)
 
     def _save_name(self) -> None:
         if self.name_save_callback is None:
@@ -568,6 +1320,11 @@ class RemoteClientWindow(QMainWindow):
         self.server_controls = server_controls
         self.socket = QWebSocket()
         self.network = QNetworkAccessManager(self)
+        self.qmt_clients = {
+            name: QmtBackendClient(name, host, port, self)
+            for name, (host, port) in QMT_BACKENDS.items()
+        }
+        self.qmt_connect_buttons: dict[str, QPushButton] = {}
         self.want_connection = False
         self.items: dict[str, dict[str, Any]] = {}
         self.alert_popups: list[ClientAlertPopup] = []
@@ -588,6 +1345,8 @@ class RemoteClientWindow(QMainWindow):
         self._build_ui()
         self._apply_style()
         self._restore_settings()
+        for client in self.qmt_clients.values():
+            client.state_changed.connect(self._refresh_qmt_connection_buttons)
 
         self.socket.connected.connect(self._on_connected)
         self.socket.disconnected.connect(self._on_disconnected)
@@ -627,6 +1386,13 @@ class RemoteClientWindow(QMainWindow):
         self.connect_button.setMinimumWidth(156)
         self.connect_button.clicked.connect(self.toggle_server_connection)
         self._set_connection_button_state("disconnected")
+        for backend_name in self.qmt_clients:
+            qmt_button = QPushButton()
+            qmt_button.setMinimumWidth(132)
+            qmt_button.clicked.connect(
+                lambda _checked=False, name=backend_name: self.toggle_qmt_connection(name)
+            )
+            self.qmt_connect_buttons[backend_name] = qmt_button
         # Kept as an attribute for Mac-host compatibility; remote clients use
         # the single coloured connection button above.
         self.disconnect_button = QPushButton("断开")
@@ -655,7 +1421,7 @@ class RemoteClientWindow(QMainWindow):
         self.popup_check.setChecked(True)
         self.sound_check.setChecked(True)
         buttons = QHBoxLayout()
-        toolbar_widgets = [self.connect_button, self.pull_button]
+        toolbar_widgets = [self.connect_button, *self.qmt_connect_buttons.values(), self.pull_button]
         if self.server_controls:
             toolbar_widgets.extend(
                 [
@@ -749,6 +1515,7 @@ class RemoteClientWindow(QMainWindow):
         preferences_action.triggered.connect(self.open_settings)
         preview_action = settings_menu.addAction("试听当前提示音")
         preview_action.triggered.connect(lambda: self.play_alert_sound(preview=True))
+        self._refresh_qmt_connection_buttons()
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -771,6 +1538,12 @@ class RemoteClientWindow(QMainWindow):
             QPushButton:disabled { color: #9aa5b4; background: #f1f4f8; }
             QPushButton#primaryButton { color: white; background: #2f6feb;
                                         border-color: #2f6feb; }
+            QPushButton#qmtPurchaseButton { color: white; background: #168553;
+                                            border-color: #168553; font-weight: 700; }
+            QPushButton#qmtPurchaseButton:hover { background: #0f6c42; }
+            QPushButton#qmtRedeemButton { color: white; background: #c53b45;
+                                          border-color: #c53b45; font-weight: 700; }
+            QPushButton#qmtRedeemButton:hover { background: #aa2733; }
             QFrame#changeBanner { background: #fff7df; border: 1px solid #f1c453;
                                   border-radius: 9px; }
             QLabel#changeBannerText { color: #6a4600; font-weight: 600; }
@@ -941,6 +1714,33 @@ class RemoteClientWindow(QMainWindow):
             "QPushButton:hover { background: %s; }" % (background, border, border)
         )
         self.connect_button.setProperty("connection_state", state)
+
+    def _refresh_qmt_connection_buttons(self) -> None:
+        for backend_name, button in self.qmt_connect_buttons.items():
+            client = self.qmt_clients[backend_name]
+            state_text = client.status_text()
+            if client.is_ready():
+                background, border = "#168553", "#0f6c42"
+            elif any(word in state_text for word in ("正在", "同步", "重连")):
+                background, border = "#d97706", "#b45309"
+            else:
+                background, border = "#c53b45", "#aa2733"
+            button.setText(f"{backend_name} · {state_text}")
+            button.setToolTip(f"{client.host}:{client.port} · 点击连接或断开")
+            button.setStyleSheet(
+                "QPushButton { color: white; background: %s; border: 1px solid %s; "
+                "border-radius: 6px; padding: 8px 12px; font-weight: 600; } "
+                "QPushButton:hover { background: %s; }" % (background, border, border)
+            )
+
+    def toggle_qmt_connection(self, backend_name: str) -> None:
+        client = self.qmt_clients[backend_name]
+        if client.want_connection or client.is_connected():
+            client.disconnect_backend()
+            self.footer_label.setText(f"{backend_name} 已断开")
+            return
+        client.connect_backend()
+        self.footer_label.setText(f"正在连接 {backend_name} · {client.host}:{client.port}")
 
     def toggle_server_connection(self) -> None:
         if self.want_connection or self.socket.state() != QAbstractSocket.SocketState.UnconnectedState:
@@ -1285,6 +2085,7 @@ class RemoteClientWindow(QMainWindow):
             payload,
             self,
             name_save_callback=self._save_symbol_name if self.server_controls else None,
+            qmt_clients=self.qmt_clients,
         )
         self.pcf_dialogs.append(dialog)
         dialog.finished.connect(
@@ -1334,6 +2135,8 @@ class RemoteClientWindow(QMainWindow):
         self._save_settings()
         self.ping_timer.stop()
         self.socket.close()
+        for client in self.qmt_clients.values():
+            client.close()
         event.accept()
 
 
