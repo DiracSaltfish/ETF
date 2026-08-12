@@ -16,6 +16,7 @@
 
 typedef void *(*cj_init_fn)(const void *options);
 typedef int64_t (*cj_create_sub_fn)(void *module, const char *sql, bool coord);
+typedef int64_t (*cj_modify_sub_fn)(void *module, int64_t sub_id, const char *sql);
 typedef void (*cj_register_cb_fn)(void *module, void *callback);
 typedef int64_t (*cj_terminate_sub_fn)(void *module, int64_t sub_id);
 
@@ -24,6 +25,7 @@ static int64_t g_sub_id = -1;
 static uint64_t g_callback_count = 0;
 static char g_windcode[32] = "";
 static char g_safe_code[32] = "";
+static cj_modify_sub_fn g_modify_sub = NULL;
 static cj_terminate_sub_fn g_terminate_sub = NULL;
 
 static void write_all(int fd, const void *data, size_t size) {
@@ -226,9 +228,11 @@ static int initialise_module(void) {
     cj_init_fn init = (cj_init_fn)dlsym(tbapi, "CJAVAInit");
     cj_register_cb_fn register_cb = (cj_register_cb_fn)
         dlsym(tbapi, "CJAVARegisterQueryCallBack");
+    g_modify_sub = (cj_modify_sub_fn)
+        dlsym(tbapi, "CJAVAModifySubscription");
     g_terminate_sub = (cj_terminate_sub_fn)
         dlsym(tbapi, "CJAVATerminateSubscription");
-    if (!init || !register_cb || !g_terminate_sub) return 102;
+    if (!init || !register_cb || !g_modify_sub || !g_terminate_sub) return 102;
 
     void *wind_module = NULL;
     Dl_info info;
@@ -256,36 +260,57 @@ int64_t wind_tbapi_subscribe(const char *windcode, int latency_ms) {
     if (latency_ms < 100 || latency_ms > 60000) return -20002;
     set_code(windcode);
 
-    if (g_sub_id >= 0) {
-        if (g_terminate_sub) (void)g_terminate_sub(g_module, g_sub_id);
-        g_sub_id = -1;
-    }
+    (void)latency_ms;  /* always 500 MS — matching Wind native F5 */
     int init_result = initialise_module();
     if (init_result != 0) {
-        write_status("initialise_failed", init_result, "TBAPI2 module unavailable");
+        write_status("initialise_failed", init_result,
+                     "TBAPI2 module unavailable");
         return -init_result;
     }
 
-    void *tbapi = dlopen(
-        "/Applications/WindPersonFree.app/Contents/Frameworks/"
-        "libWind.Cosmos.TBAPI2.dylib", RTLD_NOW | RTLD_LOCAL);
-    cj_create_sub_fn create_sub = (cj_create_sub_fn)
-        dlsym(tbapi, "CJAVACreateSubscription");
-    if (!create_sub) return -102;
+    /* Already subscribed? Terminate old first. */
+    if (g_sub_id >= 0 && g_terminate_sub) {
+        (void)g_terminate_sub(g_module, g_sub_id);
+        g_sub_id = -1;
+    }
 
-    char sql[768];
-    int n = snprintf(sql, sizeof(sql),
-        "SELECT etfbuynumber, etfbuyamount, "
-        "etfsellnumber, etfsellamount "
-        "FROM ETFComprehensive.WholeETFData "
-        "WHERE windcode = '%s' LATENCY(%d MS)", windcode, latency_ms);
-    if (n <= 0 || (size_t)n >= sizeof(sql)) return -20003;
+    /* Step 1 — Create with empty windcode (matching Wind native) */
+    {
+        void *tbapi = dlopen(
+            "/Applications/WindPersonFree.app/Contents/Frameworks/"
+            "libWind.Cosmos.TBAPI2.dylib", RTLD_NOW | RTLD_LOCAL);
+        cj_create_sub_fn create_sub = (cj_create_sub_fn)
+            dlsym(tbapi, "CJAVACreateSubscription");
+        if (!create_sub) return -102;
 
-    g_callback_count = 0;
-    g_sub_id = create_sub(g_module, sql, false);
-    write_status(g_sub_id >= 0 ? "subscribed" : "subscribe_failed",
-                 g_sub_id, sql);
-    return g_sub_id;
+        const char *create_sql =
+            "SELECT etfbuynumber, etfbuyamount, etfbuymoney, "
+            "etfsellnumber, etfsellamount, etfsellmoney "
+            "FROM ETFComprehensive.WholeETFData "
+            "WHERE windcode = '' LATENCY(500 MS)";
+
+        g_callback_count = 0;
+        g_sub_id = create_sub(g_module, create_sql, false);
+        write_status(g_sub_id >= 0 ? "create_empty" : "create_failed",
+                     g_sub_id, create_sql);
+        if (g_sub_id < 0) return g_sub_id;
+    }
+
+    /* Step 2 — Modify to target windcode */
+    {
+        char modify_sql[512];
+        int n = snprintf(modify_sql, sizeof(modify_sql),
+            "SELECT etfbuynumber, etfbuyamount, etfbuymoney, "
+            "etfsellnumber, etfsellamount, etfsellmoney "
+            "FROM ETFComprehensive.WholeETFData "
+            "WHERE windcode = '%s' LATENCY(500 MS)", windcode);
+        if (n <= 0 || (size_t)n >= sizeof(modify_sql)) return -20003;
+
+        int64_t mod_result = g_modify_sub(g_module, g_sub_id, modify_sql);
+        write_status(mod_result >= 0 ? "modify_target" : "modify_failed",
+                     mod_result, modify_sql);
+        return mod_result;
+    }
 }
 
 __attribute__((visibility("default")))

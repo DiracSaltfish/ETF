@@ -108,6 +108,7 @@ class ProbeError(RuntimeError):
 class ProbeController:
     LLDB_DLOPEN_FAILED = -9001
     LLDB_DLSYM_FAILED = -9002
+    SUBSCRIBED_STATUSES = {"subscribed", "modify_target"}
 
     def build_probe(self) -> None:
         if not PROBE_SOURCE.exists():
@@ -234,7 +235,12 @@ class ProbeController:
                 f"(long long)({call_expression}) : "
                 f"({handle} ? {cls.LLDB_DLSYM_FAILED} : {cls.LLDB_DLOPEN_FAILED})"
             ),
-            f"frame variable {error} {result}",
+            # `$tb_*` names are LLDB persistent expression variables, not
+            # source variables in the selected stack frame.  `frame variable`
+            # rejects them as undeclared; query them through the expression
+            # evaluator so their original names remain available to parsers.
+            f"expr -- {error}",
+            f"expr -- {result}",
         ]
 
     @classmethod
@@ -256,6 +262,40 @@ class ProbeController:
         return result
 
     @staticmethod
+    def _parse_integer_variable(output: str, var_name: str) -> int | None:
+        match = re.search(rf"{re.escape(var_name)}\s*=\s*(-?\d+)", output)
+        return int(match.group(1)) if match else None
+
+    @classmethod
+    def _append_subscription_id_commands(
+        cls, commands: list[str], index: int
+    ) -> None:
+        """Read the real native id after Create(empty) -> Modify(target).
+
+        CJAVAModifySubscription returns an operation result, not necessarily
+        the subscription id.  The probe already exposes its retained id via
+        wind_tbapi_subscription_id(), so query that in the same LLDB attach.
+        """
+        # The last two commands emitted by `_checked_call_commands` print the
+        # loader error and call result.  Define the id variables before those
+        # reads, then print the retained native id separately.
+        output_start = len(commands) - 2
+        commands.insert(
+            output_start,
+            f'expr -- void *$tb_id_function_{index} = $tb_handle_{index} ? '
+            f'(void *)dlsym($tb_handle_{index}, '
+            '"wind_tbapi_subscription_id") : (void *)0',
+        )
+        commands.insert(
+            output_start + 1,
+            f"expr -- long long $tb_sub_id_{index} = "
+            f"$tb_id_function_{index} ? "
+            f"((long long (*)(void))$tb_id_function_{index})() : "
+            f"{cls.LLDB_DLSYM_FAILED}",
+        )
+        commands.append(f"expr -- $tb_sub_id_{index}")
+
+    @staticmethod
     def _wait_for_status(symbol: str, newer_than_ns: int) -> dict[str, Any]:
         path = live_status_path(symbol)
         deadline = time.monotonic() + 8
@@ -269,11 +309,67 @@ class ProbeController:
             time.sleep(0.1)
         raise ProbeError(f"订阅命令已执行，但未收到状态文件：{path}")
 
+    def _best_effort_stop_paths(self, pid: int, paths: list[Path]) -> bool:
+        """Terminate probe subscriptions that Python could not register.
+
+        A protocol/status parsing failure may happen after TBAPI has already
+        created a live subscription.  Reloading the same path resolves to the
+        existing in-process image, allowing its stop entry point to terminate
+        that otherwise orphaned subscription.
+        """
+        if not paths:
+            return True
+        commands: list[str] = []
+        for index, path in enumerate(paths):
+            commands.extend(
+                self._checked_call_commands(
+                    index=index,
+                    dylib_path=path,
+                    function_name="wind_tbapi_stop",
+                    call_expression=(
+                        f"((long long (*)(void))$tb_function_{index})()"
+                    ),
+                )
+            )
+        commands.append("process detach")
+        try:
+            self._run_lldb(
+                pid,
+                commands,
+                timeout_seconds=max(45, 20 + len(paths) * 8),
+            )
+            return True
+        except Exception:
+            # Preserve the original subscription failure.  Cleanup is a safety
+            # net and must not replace the actionable root-cause message.
+            return False
+
+    def _cleanup_stale_probe_subscriptions(self, pid: int) -> None:
+        """Terminate subscriptions left by a prior failed host operation."""
+        try:
+            paths = sorted(
+                WIND_PROBE_DIR.glob(f"libwind_tbapi_runtime_*_{pid}_*.dylib")
+            )
+        except OSError:
+            return
+        # Bound each LLDB attach and only remove paths after their stop calls
+        # completed.  Keeping failed paths allows a later retry to clean them.
+        for start in range(0, len(paths), 8):
+            batch = paths[start : start + 8]
+            if not self._best_effort_stop_paths(pid, batch):
+                continue
+            for path in batch:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
     def subscribe(self, symbol: str, latency_ms: int) -> SubscriptionSession:
         if not WIND_SYMBOL_PATTERN.fullmatch(symbol):
             raise ProbeError("内部 Wind 代码格式错误，预期格式为 000000.SZ。")
         self.build_probe()
         pid = self.find_wind_pid()
+        self._cleanup_stale_probe_subscriptions(pid)
         dylib_path = self._copy_unique_probe(symbol, pid)
         status_path = live_status_path(symbol)
         previous_mtime = status_path.stat().st_mtime_ns if status_path.exists() else 0
@@ -288,16 +384,28 @@ class ProbeController:
                 f'(\"{symbol}\", {latency_ms})'
             ),
         )
+        self._append_subscription_id_commands(commands, 0)
         commands.append("process detach")
-        output = self._run_lldb(pid, commands)
-        self._checked_call_result(output, 0)
-        status = self._wait_for_status(symbol, previous_mtime)
-        sub_id = int(status.get("code", -1))
-        if status.get("status") != "subscribed" or sub_id < 0:
-            raise ProbeError(
-                f"TBAPI2 订阅失败：status={status.get('status')} code={sub_id} "
-                f"message={status.get('message', '')}"
-            )
+        try:
+            output = self._run_lldb(pid, commands)
+            self._checked_call_result(output, 0)
+            status = self._wait_for_status(symbol, previous_mtime)
+            operation_code = int(status.get("code", -1))
+            sub_id = self._parse_integer_variable(output, "$tb_sub_id_0")
+            if (
+                status.get("status") not in self.SUBSCRIBED_STATUSES
+                or operation_code < 0
+                or sub_id is None
+                or sub_id < 0
+            ):
+                raise ProbeError(
+                    f"TBAPI2 订阅失败：status={status.get('status')} "
+                    f"code={operation_code} sub_id={sub_id} "
+                    f"message={status.get('message', '')}"
+                )
+        except Exception:
+            self._best_effort_stop_paths(pid, [dylib_path])
+            raise
         return SubscriptionSession(symbol, pid, dylib_path, sub_id)
 
     def stop(self, session: SubscriptionSession) -> None:
@@ -327,6 +435,7 @@ class ProbeController:
 
         self.build_probe()
         pid = self.find_wind_pid()
+        self._cleanup_stale_probe_subscriptions(pid)
         plans: list[tuple[str, Path, int]] = []
         commands: list[str] = []
         for index, symbol in enumerate(unique_symbols):
@@ -347,29 +456,48 @@ class ProbeController:
                     ),
                 )
             )
+            self._append_subscription_id_commands(commands, index)
         commands.append("process detach")
-        output = self._run_lldb(
-            pid,
-            commands,
-            timeout_seconds=max(45, 20 + len(unique_symbols) * 10),
-        )
+        try:
+            output = self._run_lldb(
+                pid,
+                commands,
+                timeout_seconds=max(45, 20 + len(unique_symbols) * 10),
+            )
+        except Exception:
+            self._best_effort_stop_paths(
+                pid, [dylib_path for _symbol, dylib_path, _mtime in plans]
+            )
+            raise
 
         sessions: dict[str, SubscriptionSession] = {}
         errors: dict[str, str] = {}
+        failed_paths: list[Path] = []
         for index, (symbol, dylib_path, previous_mtime) in enumerate(plans):
             try:
                 self._checked_call_result(output, index)
                 status = self._wait_for_status(symbol, previous_mtime)
-                sub_id = int(status.get("code", -1))
-                if status.get("status") != "subscribed" or sub_id < 0:
+                operation_code = int(status.get("code", -1))
+                sub_id = self._parse_integer_variable(
+                    output, f"$tb_sub_id_{index}"
+                )
+                if (
+                    status.get("status") not in self.SUBSCRIBED_STATUSES
+                    or operation_code < 0
+                    or sub_id is None
+                    or sub_id < 0
+                ):
                     raise ProbeError(
-                        f"status={status.get('status')} code={sub_id}"
+                        f"status={status.get('status')} code={operation_code} "
+                        f"sub_id={sub_id}"
                     )
                 sessions[symbol] = SubscriptionSession(
                     symbol, pid, dylib_path, sub_id
                 )
             except Exception as exc:
                 errors[symbol] = str(exc)
+                failed_paths.append(dylib_path)
+        self._best_effort_stop_paths(pid, failed_paths)
         return sessions, errors
 
     def stop_many(
