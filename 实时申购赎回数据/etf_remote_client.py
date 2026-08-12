@@ -1113,7 +1113,7 @@ def main() -> int:
     font = QFont()
     font.setPointSize(13)
     app.setFont(font)
-    window = RemoteClientWindow()
+    window = RemoteClientWindow(default_address="192.168.1.113:6787")
     window.show()
     if window.auto_connect_enabled:
         QTimer.singleShot(0, window.connect_server)
