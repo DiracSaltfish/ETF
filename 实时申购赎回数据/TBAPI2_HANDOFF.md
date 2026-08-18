@@ -136,15 +136,18 @@ cd "/Users/ellis/Desktop/ETF交割/实时申购赎回数据"
 - 服务器监听 `0.0.0.0:6787`，向内网提供全量拉取、变化推送和心跳；观察列表更新、启停和 PCF 刷新只允许 `127.0.0.1/::1`。按用户要求不使用令牌。
 - `web/monitor.html` 可直接由浏览器访问，支持声音、系统通知和自动重连。
 - `etf_remote_client.py` 是跨平台 PyQt6 客户端，Mac/Windows 均可运行，断线自动重连并在客户端本地弹窗/响铃。
-- 计划任务默认工作日 `09:15–15:00`（Asia/Shanghai）。Wind 进程重启后会把状态改为 `reconnecting`，在计划时段自动重建订阅。
+- 生命周期任务默认工作日 `09:00` 清空上一日实时状态，`09:10` 启动 Wind，`09:15:05` 用第一只观察标的执行一次临时订阅预热，`09:15:30` 建立全部正式订阅，`15:00` 先停订再关闭 Wind；确认 Wind PID 完全消失后，才清理严格匹配的临时 dylib。预热专门吸收 TBAPI2 首次延迟初始化可能产生的 `EXC_BAD_ACCESS address=0x0`，其他错误不会被吞掉。Wind 盘中意外退出时按冷却时间重新启动并重建订阅。Mac-home 首页另有仅限本机调用的“启动 Wind”“关闭 Wind 并清理”按钮和状态灯。
+- 服务端对每个已观察到的份额变化按 callback 毫秒时间写入 `Application Support/ETFDelivery/history/changes_YYYY-MM-DD.jsonl`，默认保留 120 天；桌面客户端与网页均提供日期/标的查询入口。
 - 观察列表持久化；技术日志单独保存在 Application Support，不显示在主页。
 
 实机/构建验证：
 
 - 服务器成功读取两份真实缓存：`159518` 轧差 `+1,000,000`，`159393` 轧差 `-900,000`。
 - HTTP 全量、WebSocket 初始快照/心跳/拉取、网页声音解锁均已验证。
-- Mac arm64 打包产物已通过 `codesign --verify --deep --strict`，内嵌服务在临时端口 `6798` 实际启动并返回真实全量。
-- 8 项 Python 回归测试全部通过。
+- Mac arm64 打包产物已通过 `codesign --verify --deep --strict`；2026-08-15 已部署到 Mac-home `192.168.1.113`，内嵌服务在 `0.0.0.0:6787` 正常监听并返回 protocol 1、11 个标的。
+- 49 项 Python 回归测试全部通过；GPT-5.6 Terra 两轮静态终检均未发现 P0/P1。
+- 实机生命周期闭环通过：先从 Wind 临时目录精确删除 56 个历史生成 dylib（2,853,568 字节），再由主机启动 Wind，状态达到 `running=true`、`tbapi_loaded=true`、单个经路径校验的 PID；随后以 SIGTERM 温和关闭并再次清理，最终 Wind PID 与生成 dylib 均为 0，主机和 6787 服务继续运行。
+- 实测发现临时签名更新会让 macOS TCC 原授权失配。清理现已放入最长 15 秒的可终止隔离进程，不再因权限框无限阻塞。当前部署已恢复临时签名并可正常启动；长期免重复授权必须改用 `Developer ID Application` + Apple 公证，不能使用 `Apple Development` 证书冒充分发签名。
 
 交付物：
 
@@ -159,17 +162,16 @@ cd "/Users/ellis/Desktop/ETF交割/实时申购赎回数据"
 /Users/ellis/Desktop/ETF交割/实时申购赎回数据/安装MacHome图形版.command
 ```
 
-最终现场状态（2026-08-11 17:46）：图形版已安装到
+最终现场状态（2026-08-15 00:50）：图形版已安装到
 `/Users/ellis/Applications/ETF监控主机.app`，LaunchAgent
-`com.etfdelivery.mac-home` 为 `running`；旧纯后台 LaunchAgent 已卸载。用户已为新 app 开启完全磁盘访问权限，健康接口 `last_error=null`。通过真实内网地址
-`http://192.168.1.23:6787` 验证成功，WebSocket 返回 `snapshot 2` 和 `pong`；当前为盘后，`monitoring=false` 是预期状态。
+`com.etfdelivery.mac-home` 为 `running`；旧纯后台 LaunchAgent 已卸载。健康接口 `last_error=null`，主机进程正常、Wind 已按测试流程关闭、历史生成 dylib 为 0。通过 Mac-home 本机 `127.0.0.1:6787` 和内网服务验证成功；当天为周六，`monitoring=false` 是预期状态。工作日真实 09:00/09:10/09:15:05/09:15:30/15:00 边界仍应在下一个交易日观察日志复核。
 
 下一位 agent 的优先事项：
 
 1. 必须在正常交易时段做一次“真实数值变化”验收，确认服务器、网页和至少一台远程客户端同时收到同一个 change 事件并各自响铃。
 2. Wind 升级后优先复核 TBAPI2 模块偏移 `base + 0xB0568`；目前尚未做版本签名/偏移自动扫描，错误版本不应盲目注入。
 3. 继续采集多行、字段为 null 的样本，确认 JavaTableFrame 行尾 7 字节语义。
-4. 如需审计历史机会，可在服务端增加 SQLite 变化事件表；当前仅保留最新变化和轮换技术日志。
+4. 变化历史现已按日 JSONL 持久化；若未来需要更复杂的统计、联表或多年数据，再考虑迁移 SQLite。
 
 旧的完整逆向与注入记录仍见：
 

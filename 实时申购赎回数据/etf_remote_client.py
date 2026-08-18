@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sys
 import time
@@ -12,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QDate, QObject, QSettings, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtNetwork import (
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDateEdit,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -657,6 +659,19 @@ def format_share_value(value: Any, signed: bool = False) -> str:
     return text
 
 
+def format_time_only(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    if "T" in text:
+        text = text.split("T", 1)[1]
+    if "+" in text:
+        text = text.split("+", 1)[0]
+    if text.endswith("Z"):
+        text = text[:-1]
+    return text[:12].rstrip(".") if len(text) >= 8 else text
+
+
 def basket_count(item: dict[str, Any], amount_field: str) -> float | None:
     """Return an amount's basket count using the current PCF minimum unit."""
 
@@ -690,9 +705,12 @@ def format_basket_count(value: float | None, signed: bool = False) -> str:
 def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
     """Classify creation capacity from cumulative and net PCF limits locally.
 
-    A zero limit means that specific constraint is not set.  A positive
+    A zero limit means that specific PCF constraint is not set.  A positive
     ``CreationLimit`` is compared with cumulative creation shares, while a
-    positive ``NetCreationLimit`` is compared with the creation/redemption net.
+    positive ``NetCreationLimit`` is compared with the creation/redemption
+    net.  This distinction is essential for ETFs such as 159518: it can have
+    ``CreationLimit=0`` but a positive net-creation limit that is released by
+    an intraday redemption.
     """
 
     result: dict[str, Any] = {
@@ -704,6 +722,7 @@ def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
         "net_limit_shares": None,
         "limit_shares": None,
         "remaining_shares": None,
+        "remaining_baskets": None,
         "reason": "等待实时份额和 PCF",
     }
     values = item.get("values") or {}
@@ -733,12 +752,29 @@ def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
     result["creation_limit_shares"] = creation_limit if creation_limit_valid else None
     result["net_limit_shares"] = net_limit if net_limit_valid else None
 
-    if creation_limit_valid and creation_limit > 0 and creation_shares >= creation_limit:
+    creation_allowed = pcf.get("creation_allowed")
+    if creation_allowed is False:
+        result.update(
+            kind="closed",
+            label="0",
+            remaining_shares=0,
+            remaining_baskets=0,
+            reason="PCF 明确关闭申购",
+        )
+        return result
+    if creation_allowed is not True:
+        result["reason"] = "PCF 未明确开放申购"
+        return result
+    if not creation_limit_valid or not net_limit_valid:
+        result["reason"] = "PCF 的累计或净申购上限字段不完整"
+        return result
+    if creation_limit > 0 and creation_shares >= creation_limit:
         result.update(
             kind="full",
-            label="已满",
+            label="0",
             limit_shares=creation_limit,
             remaining_shares=0,
+            remaining_baskets=0,
             reason=(
                 f"当前累计申购 {format_share_value(creation_shares)}，"
                 f"已达到 PCF 累计上限 {format_share_value(creation_limit)}"
@@ -748,48 +784,60 @@ def classify_local_net_creation_quota(item: dict[str, Any]) -> dict[str, Any]:
     if net_limit_valid and net_limit > 0 and net_shares >= net_limit:
         result.update(
             kind="full",
-            label="已满",
+            label="0",
             limit_shares=net_limit,
             remaining_shares=0,
+            remaining_baskets=0,
             reason=(
                 f"当前净申购 {format_share_value(net_shares)}，"
                 f"已达到 PCF 净申购上限 {format_share_value(net_limit)}"
             ),
         )
         return result
-    if pcf.get("creation_allowed") is False:
-        result.update(
-            kind="closed",
-            label="申购关闭",
-            reason="PCF 明确关闭申购",
-        )
-        return result
-    if not creation_limit_valid or not net_limit_valid:
-        result["reason"] = "PCF 的累计或净申购上限字段不完整"
-        return result
 
     constraints: list[tuple[str, float]] = []
     if creation_limit > 0:
-        constraints.append(("累计", max(0.0, float(creation_limit) - float(creation_shares))))
+        constraints.append(
+            ("累计", max(0.0, float(creation_limit) - float(creation_shares)))
+        )
     if net_limit > 0:
         constraints.append(("净申购", max(0.0, float(net_limit) - float(net_shares))))
     if not constraints:
         result.update(
             kind="available",
-            label="未满",
+            label="不限",
             reason="PCF 未设置正数累计申购或净申购上限",
         )
         return result
 
     binding_name, remaining = min(constraints, key=lambda constraint: constraint[1])
+    unit = pcf.get("creation_redemption_unit")
+    if not isinstance(unit, (int, float)) or isinstance(unit, bool) or unit <= 0:
+        result["reason"] = "PCF 缺少最小申赎单位"
+        return result
+    remaining_baskets = max(0, math.floor(float(remaining) / float(unit) + 1e-9))
+    if remaining_baskets < 1:
+        result.update(
+            kind="full",
+            label="0",
+            limit_shares=(creation_limit if binding_name == "累计" else net_limit),
+            remaining_shares=remaining,
+            remaining_baskets=0,
+            reason=(
+                f"距离 PCF {binding_name}限额仅剩 {format_share_value(remaining)}，"
+                "不足一个完整申购篮子"
+            ),
+        )
+        return result
     result.update(
         kind="available",
-        label="未满",
+        label=str(remaining_baskets),
         remaining_shares=remaining,
+        remaining_baskets=remaining_baskets,
         reason=(
             f"累计申购 {format_share_value(creation_shares)}，"
-            f"净申购 {format_share_value(net_shares)}；"
-            f"距离 PCF {binding_name}限额还剩 {format_share_value(remaining)}"
+            f"净申购 {format_share_value(net_shares)}；可申购 "
+            f"{remaining_baskets} 篮子（{format_share_value(remaining)}）"
         ),
     )
     return result
@@ -845,6 +893,127 @@ class ChangeBanner(QFrame):
 
     def set_message(self, message: str) -> None:
         self.message_label.setText(message)
+
+
+class ChangeHistoryDialog(QDialog):
+    refreshRequested = pyqtSignal(str, str)
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        symbols: list[str] | None = None,
+        selected_symbol: str = "",
+    ) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setWindowTitle("变化历史")
+        self.resize(1120, 620)
+        layout = QVBoxLayout(self)
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("日期"))
+        self.date_input = QDateEdit(QDate.currentDate())
+        self.date_input.setCalendarPopup(True)
+        self.date_input.setDisplayFormat("yyyy-MM-dd")
+        controls.addWidget(self.date_input)
+        controls.addWidget(QLabel("标的"))
+        self.symbol_combo = QComboBox()
+        self.symbol_combo.addItem("全部标的", "")
+        for symbol in sorted(set(symbols or [])):
+            self.symbol_combo.addItem(symbol, symbol)
+        if selected_symbol:
+            index = self.symbol_combo.findData(selected_symbol)
+            if index >= 0:
+                self.symbol_combo.setCurrentIndex(index)
+        controls.addWidget(self.symbol_combo)
+        self.refresh_button = QPushButton("查询")
+        self.refresh_button.clicked.connect(self.request_refresh)
+        controls.addWidget(self.refresh_button)
+        controls.addStretch()
+        self.summary_label = QLabel("等待查询")
+        controls.addWidget(self.summary_label)
+        layout.addLayout(controls)
+
+        self.table = QTableWidget(0, 8)
+        self.table.setObjectName("monitorTable")
+        self.table.setHorizontalHeaderLabels(
+            [
+                "变化时间",
+                "标的",
+                "名称",
+                "申购份额",
+                "赎回份额",
+                "轧差份额",
+                "变化内容",
+                "机会判断",
+            ]
+        )
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def request_refresh(self) -> None:
+        self.refresh_button.setEnabled(False)
+        self.summary_label.setText("正在查询…")
+        self.refreshRequested.emit(
+            self.date_input.date().toString("yyyy-MM-dd"),
+            str(self.symbol_combo.currentData() or ""),
+        )
+
+    def set_error(self, message: str) -> None:
+        self.refresh_button.setEnabled(True)
+        self.summary_label.setText(message)
+
+    def set_payload(self, payload: dict[str, Any]) -> None:
+        items = payload.get("items")
+        if not isinstance(items, list):
+            items = []
+        self.table.setRowCount(len(items))
+        for row, item in enumerate(items):
+            if not isinstance(item, dict):
+                item = {}
+            current = item.get("current")
+            if not isinstance(current, dict):
+                current = {}
+            changes = item.get("changes")
+            if not isinstance(changes, list):
+                changes = []
+            opportunity = item.get("opportunity")
+            if not isinstance(opportunity, dict):
+                opportunity = {}
+            event_time = format_time_only(item.get("event_time"))
+            values = [
+                event_time,
+                str(item.get("symbol") or ""),
+                str(item.get("name") or ""),
+                format_share_value(current.get("etfbuyamount")),
+                format_share_value(current.get("etfsellamount")),
+                format_share_value(current.get("netamount"), signed=True),
+                "；".join(
+                    str(change.get("text") or "")
+                    for change in changes
+                    if isinstance(change, dict)
+                )
+                or "—",
+                str(opportunity.get("label") or "—"),
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, column, cell)
+        self.refresh_button.setEnabled(True)
+        self.summary_label.setText(
+            f"{payload.get('date') or self.date_input.date().toString('yyyy-MM-dd')} · "
+            f"{len(items)} 条变化"
+        )
 
 
 class PcfDetailDialog(QDialog):
@@ -1329,6 +1498,7 @@ class RemoteClientWindow(QMainWindow):
         self.items: dict[str, dict[str, Any]] = {}
         self.alert_popups: list[ClientAlertPopup] = []
         self.pcf_dialogs: list[PcfDetailDialog] = []
+        self.history_dialog: ChangeHistoryDialog | None = None
         self.changed_symbols: set[str] = set()
         # Symbols whose server-side opportunity/change history has been accepted as
         # the local baseline.  Keep this separate from ``items`` because regular
@@ -1416,6 +1586,8 @@ class RemoteClientWindow(QMainWindow):
         self.reset_baseline_button = QPushButton("重置变化基准")
         self.reset_baseline_button.clicked.connect(self.reset_change_baseline)
         self.reset_baseline_button.setEnabled(False)
+        self.history_button = QPushButton("变化历史…")
+        self.history_button.clicked.connect(self.open_change_history)
         self.popup_check = QCheckBox("弹窗提醒")
         self.sound_check = QCheckBox("声音提醒")
         self.popup_check.setChecked(True)
@@ -1434,6 +1606,7 @@ class RemoteClientWindow(QMainWindow):
             [
                 self.settings_button,
                 self.reset_baseline_button,
+                self.history_button,
                 self.popup_check,
                 self.sound_check,
             ]
@@ -1483,7 +1656,7 @@ class RemoteClientWindow(QMainWindow):
                 "申购篮子",
                 "赎回篮子",
                 "轧差篮子",
-                "申购额度",
+                "可申购篮子",
                 "机会判断",
                 "更新时间",
                 "最近变化",
@@ -1515,6 +1688,8 @@ class RemoteClientWindow(QMainWindow):
         preferences_action.triggered.connect(self.open_settings)
         preview_action = settings_menu.addAction("试听当前提示音")
         preview_action.triggered.connect(lambda: self.play_alert_sound(preview=True))
+        history_action = settings_menu.addAction("变化历史…")
+        history_action.triggered.connect(self.open_change_history)
         self._refresh_qmt_connection_buttons()
 
     def _apply_style(self) -> None:
@@ -1527,7 +1702,7 @@ class RemoteClientWindow(QMainWindow):
             QCheckBox::indicator:checked { background: #2f6feb; border-color: #2f6feb; }
             QFrame#card { background: white; border: 1px solid #dce3ec;
                           border-radius: 10px; }
-            QLineEdit, QComboBox, QSpinBox { color: #172033; background: white; border: 1px solid #cbd5e1;
+            QLineEdit, QComboBox, QSpinBox, QDateEdit { color: #172033; background: white; border: 1px solid #cbd5e1;
                         border-radius: 6px; padding: 7px; min-height: 20px; }
             QGroupBox { color: #253044; border: 1px solid #dce3ec; border-radius: 8px;
                         margin-top: 10px; padding-top: 10px; font-weight: 600; }
@@ -1913,6 +2088,45 @@ class RemoteClientWindow(QMainWindow):
         self.change_banner_timer.stop()
         self.change_banner.hide()
 
+    def open_change_history(self) -> None:
+        selected_symbol = ""
+        row = self.table.currentRow()
+        if row >= 0:
+            cell = self.table.item(row, 0)
+            if cell is not None:
+                selected_symbol = cell.text().strip()
+        if self.history_dialog is None:
+            dialog = ChangeHistoryDialog(
+                self,
+                symbols=list(self.items),
+                selected_symbol=selected_symbol,
+            )
+            dialog.setStyleSheet(self.styleSheet())
+            dialog.refreshRequested.connect(self._request_change_history)
+            dialog.finished.connect(lambda _result: self._clear_history_dialog())
+            self.history_dialog = dialog
+        self.history_dialog.show()
+        self.history_dialog.raise_()
+        self.history_dialog.activateWindow()
+        self.history_dialog.request_refresh()
+
+    def _clear_history_dialog(self) -> None:
+        self.history_dialog = None
+
+    def _request_change_history(self, history_day: str, symbol: str = "") -> None:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", history_day):
+            if self.history_dialog is not None:
+                self.history_dialog.set_error("日期格式错误")
+            return
+        query = f"date={history_day}&limit=5000"
+        if symbol:
+            query += f"&symbol={symbol}"
+        self._request(
+            "GET",
+            f"/api/v1/history?{query}",
+            request_kind="change-history",
+        )
+
     def _position_change_banner(self) -> None:
         root = self.centralWidget()
         if root is None:
@@ -1949,16 +2163,7 @@ class RemoteClientWindow(QMainWindow):
 
     @staticmethod
     def _format_time(value: Any) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return "—"
-        if "T" in text:
-            text = text.split("T", 1)[1]
-        if "+" in text:
-            text = text.split("+", 1)[0]
-        if text.endswith("Z"):
-            text = text[:-1]
-        return text[:8] if len(text) >= 8 else text
+        return format_time_only(value)[:8]
 
     def _rebuild_table(self) -> None:
         symbols = sorted(self.items)
@@ -1997,22 +2202,32 @@ class RemoteClientWindow(QMainWindow):
                     cell.setForeground(QColor("#168553" if net > 0 else "#c53b45" if net < 0 else "#526074"))
                 if column == 9:
                     quota_kind = str(net_creation_quota.get("kind") or "")
-                    cell.setForeground(
-                        QColor(
-                            "#168553"
-                            if quota_kind == "available"
-                            else "#c53b45"
-                            if quota_kind in {"full", "closed"}
-                            else "#68758a"
-                        )
-                    )
+                    if quota_kind == "available":
+                        # Dark green / white has a high contrast ratio while
+                        # remaining legible beside the light table palette.
+                        cell.setBackground(QColor("#166534"))
+                        cell.setForeground(QColor("#ffffff"))
+                        font = cell.font()
+                        font.setWeight(QFont.Weight.DemiBold)
+                        cell.setFont(font)
+                    elif quota_kind in {"full", "closed"}:
+                        # A muted rose field keeps an unavailable capacity
+                        # prominent without turning a full column into a
+                        # visually aggressive solid-red block.
+                        cell.setBackground(QColor("#fde7e7"))
+                        cell.setForeground(QColor("#9f1239"))
+                        font = cell.font()
+                        font.setWeight(QFont.Weight.DemiBold)
+                        cell.setFont(font)
+                    else:
+                        cell.setForeground(QColor("#68758a"))
                     cell.setToolTip(str(net_creation_quota.get("reason") or ""))
                 if column == 10:
                     kind = str(opportunity.get("kind") or "")
                     cell.setForeground(
                         QColor("#168553" if kind == "creation" else "#c53b45" if kind == "redemption" else "#68758a")
                     )
-                if symbol in self.changed_symbols:
+                if symbol in self.changed_symbols and column != 9:
                     cell.setBackground(QColor("#fff0bd"))
                 self.table.setItem(row, column, cell)
 
@@ -2049,12 +2264,22 @@ class RemoteClientWindow(QMainWindow):
         except json.JSONDecodeError:
             payload = {}
         if status is None or int(status) >= 400:
-            self.footer_label.setText(
-                f"请求失败 HTTP {status}: {payload.get('detail', data.decode(errors='replace'))}"
+            message = str(
+                payload.get("detail", data.decode(errors="replace"))
             )
+            self.footer_label.setText(f"请求失败 HTTP {status}: {message}")
+            if request_kind == "change-history" and self.history_dialog is not None:
+                self.history_dialog.set_error(f"查询失败：{message}")
             return
         if request_kind == "pcf-detail":
             self._show_pcf_detail(payload)
+            return
+        if request_kind == "change-history":
+            if self.history_dialog is not None:
+                self.history_dialog.set_payload(payload)
+            self.footer_label.setText(
+                f"变化历史已更新 · {len(payload.get('items') or [])} 条"
+            )
             return
         if payload.get("type") == "snapshot":
             self._apply_snapshot(payload)

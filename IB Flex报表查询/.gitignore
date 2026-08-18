@@ -1,0 +1,7 @@
+reports/
+*.xml
+*.csv
+*.json
+.env
+ib_flex.env
+__pycache__/

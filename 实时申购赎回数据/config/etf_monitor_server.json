@@ -10,7 +10,7 @@
   },
   "schedule": {
     "enabled": true,
-    "policy_version": 4,
+    "policy_version": 6,
     "timezone": "Asia/Shanghai",
     "weekdays": [
       0,
@@ -19,8 +19,31 @@
       3,
       4
     ],
-    "start": "09:15",
-    "stop": "15:00"
+    "daily_reset": "09:00",
+    "warmup": "09:15:05",
+    "start": "09:15:30",
+    "stop": "15:00",
+    "last_reset_day": ""
+  },
+  "wind": {
+    "enabled": true,
+    "policy_version": 1,
+    "timezone": "Asia/Shanghai",
+    "weekdays": [0, 1, 2, 3, 4],
+    "launch": "09:10",
+    "shutdown": "15:00",
+    "startup_timeout_seconds": 30,
+    "terminate_timeout_seconds": 30,
+    "relaunch_cooldown_seconds": 120,
+    "shutdown_retry_seconds": 120,
+    "subscription_retry_seconds": 30,
+    "subscription_ready_stable_seconds": 30,
+    "subscription_warmup_settle_seconds": 2,
+    "cleanup_generated_dylibs": true,
+    "close_on_host_exit": true,
+    "last_managed_day": "",
+    "last_shutdown_day": "",
+    "manual_override_day": ""
   },
   "pcf": {
     "enabled": true,
@@ -33,5 +56,11 @@
     "max_auto_attempts_per_symbol_per_day": 8,
     "min_request_interval_seconds": 8,
     "cache_dir": ""
+  },
+  "history": {
+    "enabled": true,
+    "directory": "",
+    "retention_days": 120,
+    "max_query_items": 5000
   }
 }

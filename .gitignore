@@ -2,8 +2,70 @@
 .idea/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.sqlite
+*.sqlite3
+*.db
+*.lock
+*.dylib
+*.app/
+*.log
+
+# Local analysis outputs are generated continuously and must not trigger
+# codebase-memory-mcp's Git watcher to reindex the entire repository.
+analysis_tmp/
 
 # PyInstaller build and release outputs for the ETF monitoring applications.
 # Keep source, tests, configuration and release instructions in Git instead.
 实时申购赎回数据/build/
 实时申购赎回数据/dist/
+
+# Local credentials and runtime state.
+*.env
+篮子管理/close_only_sessions.json*
+
+# Downloaded/cache data and generated reports.
+PCF上海回补/原始响应/
+PCF上海回补/回补文件/
+PCF上海回补/报告/
+估值方案/**/data/
+估值方案/**/*.xml
+估值方案/**/*.png
+估值方案/**/tmp/
+滚贴水/data/
+滚贴水/outputs/
+**/outputs/
+**/output/
+**/work/
+159518_赎回退款拟合分析_20260710/*.csv
+本轮XOP套利盈利/*.json
+本轮XOP套利盈利/*.png
+本轮XOP套利盈利/*.txt
+
+# Temporary screenshots, spreadsheets and generated analysis files.
+tmp/pdfs/
+tmp/*.png
+tmp/*.csv
+tmp/*.xlsx
+tmp/*_inspection.json
+tmp/*_crosscheck.json
+tmp/*_scan.txt
+*.inspect.ndjson
+
+# UI previews are generated from source and are not release assets.
+实时申购赎回数据/*_preview.png
+实时申购赎回数据/*_compact.png
+实时申购赎回数据/*_light_preview.png
+实时申购赎回数据/*_clean_preview.png
+
+# Local account/report folders and compiled backup bundles.
+7.8/
+7.9/
+7.14/
+7.17/
+7.20/
+7.21/
+backups/
+wind_tbapi_probe/*.dylib

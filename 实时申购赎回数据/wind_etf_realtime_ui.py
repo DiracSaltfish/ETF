@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -60,8 +61,60 @@ WIND_TEMP_DIR = (
 WIND_PROBE_DIR = WIND_TEMP_DIR / "wind_tbapi_probe"
 LLDB = Path("/Library/Developer/CommandLineTools/usr/bin/lldb")
 WIND_PROCESS_NAME = "WindPersonFree"
+WIND_APP_BUNDLE_ID = "com.windin.mac.free"
+WIND_OPEN = Path("/usr/bin/open")
+WIND_LSOF = Path("/usr/sbin/lsof")
+WIND_PS = Path("/bin/ps")
+WIND_PERL = Path("/usr/bin/perl")
+WIND_EXECUTABLE = Path(
+    "/Applications/WindPersonFree.app/Contents/MacOS/WindPersonFree"
+)
 SYMBOL_PATTERN = re.compile(r"^[0-9]{6}$")
 WIND_SYMBOL_PATTERN = re.compile(r"^[0-9]{6}\.SZ$")
+GENERATED_PROBE_PATTERN = re.compile(
+    r"^libwind_tbapi_runtime_[0-9]{6}_SZ_[0-9]+_[0-9]+_[0-9a-f]{8}\.dylib$"
+)
+GENERATED_PROBE_CLEANUP_SCRIPT = r"""
+use strict;
+use warnings;
+use Cwd qw(realpath);
+
+my $root = shift @ARGV;
+if (!-e $root) {
+    print "0\t0\n";
+    exit 0;
+}
+if (-l $root) {
+    print STDERR "SYMLINK_ROOT\n";
+    exit 3;
+}
+if (!-d $root) {
+    print STDERR "NOT_DIRECTORY\n";
+    exit 4;
+}
+my $resolved = realpath($root);
+if (!defined $resolved) {
+    print STDERR "RESOLVE_FAILED:$!\n";
+    exit 5;
+}
+opendir(my $dir_handle, $resolved) or die "OPEN_FAILED:$!\n";
+my ($deleted_count, $deleted_bytes) = (0, 0);
+while (my $name = readdir($dir_handle)) {
+    next unless $name =~
+        m{\Alibwind_tbapi_runtime_[0-9]{6}_SZ_[0-9]+_[0-9]+_[0-9a-f]{8}\.dylib\z};
+    my $path = "$resolved/$name";
+    my @metadata = lstat($path);
+    next unless @metadata;
+    next if -l _;
+    next unless -f _;
+    my $size = $metadata[7] || 0;
+    unlink($path) or die "UNLINK_FAILED:$name:$!\n";
+    $deleted_count += 1;
+    $deleted_bytes += $size;
+}
+closedir($dir_handle);
+print "$deleted_count\t$deleted_bytes\n";
+"""
 
 
 def normalize_symbol(code: str) -> str:
@@ -110,6 +163,187 @@ class ProbeController:
     LLDB_DLSYM_FAILED = -9002
     SUBSCRIBED_STATUSES = {"subscribed", "modify_target"}
 
+    def __init__(self, probe_dir: Path = WIND_PROBE_DIR) -> None:
+        self.probe_dir = probe_dir
+
+    @staticmethod
+    def _candidate_wind_pids() -> list[int]:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-x", WIND_PROCESS_NAME],
+                text=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        return [int(line) for line in result.stdout.splitlines() if line.isdigit()]
+
+    @staticmethod
+    def _is_expected_wind_pid(pid: int) -> bool:
+        """Require the exact official app executable, not only a process name."""
+
+        if not WIND_PS.exists():
+            return False
+        try:
+            result = subprocess.run(
+                [str(WIND_PS), "-p", str(pid), "-o", "command="],
+                text=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if result.returncode != 0:
+            return False
+        try:
+            tokens = shlex.split(result.stdout.strip())
+        except ValueError:
+            return False
+        expected = WIND_EXECUTABLE.resolve(strict=False)
+        for token in tokens:
+            if not token.startswith("/"):
+                continue
+            try:
+                if Path(token).resolve(strict=False) == expected:
+                    return True
+            except OSError:
+                continue
+        return False
+
+    @classmethod
+    def _wind_pids(cls) -> list[int]:
+        return [
+            pid
+            for pid in cls._candidate_wind_pids()
+            if cls._is_expected_wind_pid(pid)
+        ]
+
+    @staticmethod
+    def _tbapi_loaded(pid: int) -> bool:
+        """Check readiness without attaching a debugger or injecting code."""
+
+        if not WIND_LSOF.exists():
+            return False
+        try:
+            result = subprocess.run(
+                [str(WIND_LSOF), "-Fn", "-p", str(pid)],
+                text=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return "libWind.Cosmos.TBAPI2.dylib" in result.stdout
+
+    def wind_process_status(self) -> dict[str, Any]:
+        pids = self._wind_pids()
+        return {
+            "running": bool(pids),
+            "pids": pids,
+            "tbapi_loaded": any(self._tbapi_loaded(pid) for pid in pids),
+        }
+
+    def launch_wind(self, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        current = self.wind_process_status()
+        if current["running"]:
+            return current
+        if not WIND_OPEN.exists():
+            raise ProbeError(f"找不到 macOS open 命令：{WIND_OPEN}")
+        try:
+            result = subprocess.run(
+                [str(WIND_OPEN), "-b", WIND_APP_BUNDLE_ID],
+                text=True,
+                capture_output=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ProbeError(f"启动 Wind 失败：{exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise ProbeError(f"启动 Wind 失败：{detail or result.returncode}")
+
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while time.monotonic() < deadline:
+            current = self.wind_process_status()
+            if current["running"]:
+                return current
+            time.sleep(0.25)
+        raise ProbeError("已调用 Wind，但等待进程启动超时。")
+
+    def terminate_wind(self, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        """Request termination with SIGTERM; never use SIGKILL automatically."""
+
+        pids = self._wind_pids()
+        for pid in pids:
+            if not self._is_expected_wind_pid(pid):
+                raise ProbeError(
+                    f"Wind 进程 {pid} 的应用身份发生变化，拒绝发送关闭信号。"
+                )
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+            except PermissionError as exc:
+                raise ProbeError(f"没有权限关闭 Wind 进程 {pid}。") from exc
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while self._wind_pids() and time.monotonic() < deadline:
+            time.sleep(0.25)
+        remaining = self._wind_pids()
+        if remaining:
+            raise ProbeError(
+                "Wind 在温和关闭请求后仍未退出；为保护数据，未强制结束也未清理 dylib。"
+            )
+        return {"running": False, "pids": [], "tbapi_loaded": False}
+
+    def cleanup_generated_dylibs(
+        self, timeout_seconds: float = 15.0
+    ) -> dict[str, int]:
+        """Remove generated dylibs in a killable helper after Wind has exited.
+
+        macOS can block an ordinary filesystem call indefinitely while an
+        App Data/Full Disk Access prompt is awaiting user input.  Keeping all
+        directory access inside a bounded helper process lets the host report
+        the permission problem and continue running instead of leaking a
+        permanently blocked Python worker thread.
+        """
+
+        if self._wind_pids():
+            raise ProbeError("Wind 仍在运行，拒绝清理可能仍被加载的 dylib。")
+        if not WIND_PERL.exists():
+            raise ProbeError(f"找不到隔离清理工具：{WIND_PERL}")
+        if not self.probe_dir.is_absolute():
+            raise ProbeError("探针临时目录必须是绝对路径，已停止清理。")
+        try:
+            result = subprocess.run(
+                [
+                    str(WIND_PERL),
+                    "-e",
+                    GENERATED_PROBE_CLEANUP_SCRIPT,
+                    str(self.probe_dir),
+                ],
+                text=True,
+                capture_output=True,
+                timeout=max(1.0, float(timeout_seconds)),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ProbeError(
+                "清理临时 dylib 超时；macOS 可能正在等待“App 数据/完全磁盘访问”授权。"
+            ) from exc
+        except OSError as exc:
+            raise ProbeError(f"无法启动隔离清理工具：{exc}") from exc
+        detail = (result.stderr or result.stdout).strip()
+        if result.returncode == 3:
+            raise ProbeError("探针临时目录是符号链接，已停止清理。")
+        if result.returncode == 4:
+            raise ProbeError("探针临时路径不是目录，已停止清理。")
+        if result.returncode != 0:
+            raise ProbeError(f"清理临时 dylib 失败：{detail or result.returncode}")
+        parts = result.stdout.strip().split("\t")
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            raise ProbeError("隔离清理工具返回了无法识别的结果。")
+        return {"deleted_count": int(parts[0]), "deleted_bytes": int(parts[1])}
+
     def build_probe(self) -> None:
         if not PROBE_SOURCE.exists():
             raise ProbeError(f"找不到探针源码：{PROBE_SOURCE}")
@@ -141,25 +375,19 @@ class ProbeController:
             raise ProbeError(f"探针编译失败：\n{result.stdout}{result.stderr}")
 
     def find_wind_pid(self) -> int:
-        result = subprocess.run(
-            ["pgrep", "-x", WIND_PROCESS_NAME],
-            text=True,
-            capture_output=True,
-            timeout=5,
-        )
-        pids = [int(line) for line in result.stdout.splitlines() if line.isdigit()]
+        pids = self._wind_pids()
         if not pids:
             raise ProbeError("未找到 WindPersonFree，请先启动并登录 Wind。")
         return pids[0]
 
     def _copy_unique_probe(self, symbol: str, pid: int) -> Path:
         try:
-            WIND_PROBE_DIR.mkdir(parents=True, exist_ok=True)
+            self.probe_dir.mkdir(parents=True, exist_ok=True)
             name = (
                 f"libwind_tbapi_runtime_{safe_code(symbol)}_{pid}_"
                 f"{int(time.time())}_{uuid.uuid4().hex[:8]}.dylib"
             )
-            destination = WIND_PROBE_DIR / name
+            destination = self.probe_dir / name
             shutil.copy2(PROBE_BINARY, destination)
             return destination
         except PermissionError as exc:
@@ -348,7 +576,7 @@ class ProbeController:
         """Terminate subscriptions left by a prior failed host operation."""
         try:
             paths = sorted(
-                WIND_PROBE_DIR.glob(f"libwind_tbapi_runtime_*_{pid}_*.dylib")
+                self.probe_dir.glob(f"libwind_tbapi_runtime_*_{pid}_*.dylib")
             )
         except OSError:
             return

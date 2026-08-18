@@ -1,0 +1,3056 @@
+[
+  {
+    "code": "159501",
+    "exchange": "SZSE",
+    "name": "纳指ETF嘉实",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDX",
+      "unit": "1000000.00",
+      "nav_per_cu": "1865402.51",
+      "estimated_cash": "-16208.15",
+      "actual_cash": "-16208.15",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 103,
+      "flags": "1:103, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "嘉实纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年04月30日更新)",
+      "date": "2026-04-30",
+      "id": "AN202604291821765398",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202604291821765398_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159501.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        15,
+        51,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59
+      ],
+      "现金差额": [
+        10,
+        51,
+        54,
+        55,
+        58,
+        59
+      ],
+      "汇率": [
+        57
+      ],
+      "清算交收": [
+        54,
+        55,
+        57,
+        58,
+        134
+      ]
+    },
+    "md": "纳斯达克100指数/159501_纳指ETF嘉实_估值方案.md"
+  },
+  {
+    "code": "159502",
+    "exchange": "SZSE",
+    "name": "标普生物科技ETF嘉实",
+    "family": "美股生物科技",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "SPSIBI",
+      "unit": "1000000.00",
+      "nav_per_cu": "1639659.68",
+      "estimated_cash": "-2164.64",
+      "actual_cash": "-2358.65",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 149,
+      "flags": "1:149, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "嘉实标普生物科技精选行业交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年01月23日更新)",
+      "date": "2026-01-23",
+      "id": "AN202601221818277723",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202601221818277723_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159502.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        15,
+        48,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56
+      ],
+      "现金差额": [
+        10,
+        48,
+        51,
+        52,
+        55,
+        56
+      ],
+      "汇率": [
+        54
+      ],
+      "清算交收": [
+        51,
+        52,
+        54,
+        55,
+        127
+      ]
+    },
+    "md": "美股生物科技/159502_标普生物科技ETF嘉实_估值方案.md"
+  },
+  {
+    "code": "159509",
+    "exchange": "SZSE",
+    "name": "纳指科技ETF景顺",
+    "family": "纳斯达克科技",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDXTMC",
+      "unit": "1000000.00",
+      "nav_per_cu": "2229533.84",
+      "estimated_cash": "125.03",
+      "actual_cash": "255.28",
+      "switch": "申购=N; 赎回=Y",
+      "mechanism": "",
+      "components": 47,
+      "flags": "1:47, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "景顺长城纳斯达克科技市值加权交易型开放式指数证券投资基金(QDII)2026年第1号更新招募说明书",
+      "date": "2026-06-30",
+      "id": "AN202606291826541473",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606291826541473_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159509.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        13,
+        66,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        127,
+        128
+      ],
+      "现金差额": [
+        13,
+        14,
+        66,
+        68,
+        69,
+        70,
+        71,
+        74,
+        75,
+        76
+      ],
+      "汇率": [
+        106,
+        173
+      ],
+      "清算交收": [
+        69,
+        71,
+        74,
+        75,
+        166
+      ]
+    },
+    "md": "纳斯达克科技/159509_纳指科技ETF景顺_估值方案.md"
+  },
+  {
+    "code": "159513",
+    "exchange": "SZSE",
+    "name": "纳斯达克100ETF大成",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDX",
+      "unit": "1000000.00",
+      "nav_per_cu": "1660190.20",
+      "estimated_cash": "-20786.53",
+      "actual_cash": "-19531.50",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 103,
+      "flags": "1:103, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "大成纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书",
+      "date": "2025-08-12",
+      "id": "AN202508111725558005",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202508111725558005_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159513.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        14,
+        53,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63
+      ],
+      "现金差额": [
+        10,
+        11,
+        54,
+        56,
+        57,
+        58,
+        59,
+        61,
+        62,
+        63,
+        111
+      ],
+      "汇率": [],
+      "清算交收": [
+        51,
+        57,
+        58
+      ]
+    },
+    "md": "纳斯达克100指数/159513_纳斯达克100ETF大成_估值方案.md"
+  },
+  {
+    "code": "159518",
+    "exchange": "SZSE",
+    "name": "标普油气ETF嘉实",
+    "family": "油气类",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "SPSIOP",
+      "unit": "1000000.00",
+      "nav_per_cu": "1099440.21",
+      "estimated_cash": "1284.61",
+      "actual_cash": "1284.61",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 51,
+      "flags": "1:51, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "嘉实标普石油天然气勘探及生产精选行业交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年01月23日更新)",
+      "date": "2026-01-23",
+      "id": "AN202601221818277737",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202601221818277737_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159518.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        14,
+        44,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52
+      ],
+      "现金差额": [
+        9,
+        44,
+        47,
+        48,
+        51,
+        52
+      ],
+      "汇率": [
+        50
+      ],
+      "清算交收": [
+        43,
+        47,
+        48,
+        50,
+        51,
+        124
+      ]
+    },
+    "md": "油气类/159518_标普油气ETF嘉实_估值方案.md"
+  },
+  {
+    "code": "159529",
+    "exchange": "SZSE",
+    "name": "标普消费ETF景顺",
+    "family": "标普消费",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "SP5CSSUP",
+      "unit": "1000000.00",
+      "nav_per_cu": "1278674.92",
+      "estimated_cash": "178.66",
+      "actual_cash": "481.33",
+      "switch": "申购=N; 赎回=Y",
+      "mechanism": "",
+      "components": 50,
+      "flags": "1:49, 2:2",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "景顺长城标普消费精选交易型开放式指数证券投资基金(QDII)2026年第1号更新招募说明书",
+      "date": "2026-06-30",
+      "id": "AN202606291826541475",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606291826541475_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159529.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        14,
+        63,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        124,
+        125
+      ],
+      "现金差额": [
+        14,
+        15,
+        63,
+        65,
+        66,
+        67,
+        68,
+        71,
+        72,
+        73
+      ],
+      "汇率": [
+        102
+      ],
+      "清算交收": [
+        66,
+        68,
+        72
+      ]
+    },
+    "md": "标普消费/159529_标普消费ETF景顺_估值方案.md"
+  },
+  {
+    "code": "159561",
+    "exchange": "SZSE",
+    "name": "德国ETF嘉实",
+    "family": "德国DAX指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "DAX",
+      "unit": "1000000.00",
+      "nav_per_cu": "1292087.84",
+      "estimated_cash": "-962.82",
+      "actual_cash": "-962.82",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 40,
+      "flags": "1:40, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "嘉实德国DAX交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年01月23日更新)",
+      "date": "2026-01-23",
+      "id": "AN202601221818277707",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202601221818277707_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159561.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        14,
+        49,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57
+      ],
+      "现金差额": [
+        9,
+        49,
+        52,
+        53,
+        56,
+        57
+      ],
+      "汇率": [
+        55
+      ],
+      "清算交收": [
+        52,
+        53,
+        55,
+        56
+      ]
+    },
+    "md": "德国DAX指数/159561_德国ETF嘉实_估值方案.md"
+  },
+  {
+    "code": "159567",
+    "exchange": "SZSE",
+    "name": "港股创新药ETF银华",
+    "family": "港股创新药",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "987018",
+      "unit": "1000000.00",
+      "nav_per_cu": "664355.34",
+      "estimated_cash": "246.59",
+      "actual_cash": "263.50",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 36,
+      "flags": "1:36, 2:1",
+      "markets": "102, 103"
+    },
+    "prospectus": {
+      "title": "银华国证港股通创新药交易型开放式指数证券投资基金招募说明书更新(2025年第1号)",
+      "date": "2025-12-05",
+      "id": "AN202512041793921126",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202512041793921126_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159567.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        12,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        61,
+        100
+      ],
+      "现金差额": [
+        12,
+        49,
+        50,
+        52,
+        53,
+        54,
+        57,
+        58,
+        59
+      ],
+      "汇率": [
+        49,
+        90
+      ],
+      "清算交收": [
+        52
+      ]
+    },
+    "md": "港股创新药/159567_港股创新药ETF银华_估值方案.md"
+  },
+  {
+    "code": "159570",
+    "exchange": "SZSE",
+    "name": "港股通创新药ETF汇添富",
+    "family": "港股创新药",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "987018",
+      "unit": "1000000.00",
+      "nav_per_cu": "1374093.10",
+      "estimated_cash": "315.85",
+      "actual_cash": "429.72",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 36,
+      "flags": "1:35, 2:2",
+      "markets": "102, 103"
+    },
+    "prospectus": {
+      "title": "汇添富国证港股通创新药交易型开放式指数证券投资基金更新招募说明书(2025年12月19日更新)",
+      "date": "2025-12-19",
+      "id": "AN202512181803178700",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202512181803178700_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159570.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        3,
+        10,
+        41,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        91,
+        92,
+        93
+      ],
+      "现金差额": [
+        3,
+        10,
+        41,
+        43,
+        44,
+        45,
+        46,
+        48,
+        49,
+        50,
+        107
+      ],
+      "汇率": [
+        41
+      ],
+      "清算交收": [
+        38,
+        44,
+        123
+      ]
+    },
+    "md": "港股创新药/159570_港股通创新药ETF汇添富_估值方案.md"
+  },
+  {
+    "code": "159577",
+    "exchange": "SZSE",
+    "name": "美国50ETF汇添富",
+    "family": "美国50指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "750108",
+      "unit": "1000000.00",
+      "nav_per_cu": "1538194.87",
+      "estimated_cash": "-16004.79",
+      "actual_cash": "-16034.40",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 50,
+      "flags": "1:50, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "汇添富MSCI美国50交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年2月13日更新)",
+      "date": "2026-02-13",
+      "id": "AN202602121819904565",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202602121819904565_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159577.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        11,
+        30,
+        31,
+        65,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74
+      ],
+      "现金差额": [
+        10,
+        11,
+        66,
+        67,
+        68,
+        69,
+        70,
+        73,
+        74,
+        116
+      ],
+      "汇率": [
+        66,
+        72,
+        73,
+        141
+      ],
+      "清算交收": [
+        63,
+        68,
+        70
+      ]
+    },
+    "md": "美国50指数/159577_美国50ETF汇添富_估值方案.md"
+  },
+  {
+    "code": "159605",
+    "exchange": "SZSE",
+    "name": "中概互联ETF广发",
+    "family": "中概互联网",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "930604",
+      "unit": "1000000.00",
+      "nav_per_cu": "813588.83",
+      "estimated_cash": "-114.02",
+      "actual_cash": "-683.32",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 30,
+      "flags": "1:30, 2:1",
+      "markets": "102, 103, 9999"
+    },
+    "prospectus": {
+      "title": "广发中证海外中国互联网30交易型开放式指数证券投资基金(QDII)更新的招募说明书",
+      "date": "2026-07-06",
+      "id": "AN202607051826729057",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202607051826729057_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159605.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        2,
+        10,
+        15,
+        60,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70
+      ],
+      "现金差额": [
+        2,
+        10,
+        60,
+        62,
+        63,
+        64,
+        65,
+        66,
+        68,
+        69,
+        70,
+        103
+      ],
+      "汇率": [
+        79
+      ],
+      "清算交收": [
+        64,
+        65,
+        69,
+        125
+      ]
+    },
+    "md": "中概互联网/159605_中概互联ETF广发_估值方案.md"
+  },
+  {
+    "code": "159607",
+    "exchange": "SZSE",
+    "name": "中概互联网ETF嘉实",
+    "family": "中概互联网",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "930604",
+      "unit": "1000000.00",
+      "nav_per_cu": "812241.39",
+      "estimated_cash": "109.79",
+      "actual_cash": "-443.49",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 30,
+      "flags": "1:30, 2:1",
+      "markets": "102, 103, 9999"
+    },
+    "prospectus": {
+      "title": "嘉实中证海外中国互联网30交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年01月23日更新)",
+      "date": "2026-01-23",
+      "id": "AN202601221818277721",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202601221818277721_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159607.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        14,
+        43,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "现金差额": [
+        9,
+        43,
+        46,
+        47,
+        48,
+        50,
+        51
+      ],
+      "汇率": [
+        43,
+        61,
+        121
+      ],
+      "清算交收": [
+        42,
+        47,
+        49,
+        50,
+        124
+      ]
+    },
+    "md": "中概互联网/159607_中概互联网ETF嘉实_估值方案.md"
+  },
+  {
+    "code": "159612",
+    "exchange": "SZSE",
+    "name": "标普500ETF国泰",
+    "family": "标普500指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "SPXNTR",
+      "unit": "1000000.00",
+      "nav_per_cu": "1890758.37",
+      "estimated_cash": "33503.99",
+      "actual_cash": "33092.70",
+      "switch": "申购=N; 赎回=Y",
+      "mechanism": "",
+      "components": 503,
+      "flags": "1:419, 2:85",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "国泰标普500交易型开放式指数证券投资基金(QDII)更新招募说明书(2025年第二号)",
+      "date": "2025-09-30",
+      "id": "AN202509291752833036",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202509291752833036_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159612.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        4,
+        10,
+        40,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        97,
+        98,
+        166
+      ],
+      "现金差额": [
+        10,
+        11,
+        40,
+        42,
+        43,
+        44,
+        45,
+        47,
+        48,
+        49
+      ],
+      "汇率": [
+        72,
+        73,
+        138
+      ],
+      "清算交收": [
+        43,
+        44,
+        46,
+        48,
+        131
+      ]
+    },
+    "md": "标普500指数/159612_标普500ETF国泰_估值方案.md"
+  },
+  {
+    "code": "159615",
+    "exchange": "SZSE",
+    "name": "恒生生物科技ETF南方",
+    "family": "恒生生物科技",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "HSBIO",
+      "unit": "1000000.00",
+      "nav_per_cu": "1006901.01",
+      "estimated_cash": "-102.19",
+      "actual_cash": "-102.52",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 30,
+      "flags": "1:30, 2:1",
+      "markets": "102, 103"
+    },
+    "prospectus": {
+      "title": "南方恒生生物科技交易型开放式指数证券投资基金(QDII)招募说明书(更新)",
+      "date": "2026-01-14",
+      "id": "AN202601131816982239",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202601131816982239_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159615.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        31,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        89
+      ],
+      "现金差额": [
+        9,
+        31,
+        33,
+        34,
+        35,
+        36,
+        37,
+        40,
+        41
+      ],
+      "汇率": [
+        31,
+        32,
+        39,
+        68,
+        129
+      ],
+      "清算交收": [
+        35,
+        36,
+        80
+      ]
+    },
+    "md": "恒生生物科技/159615_恒生生物科技ETF南方_估值方案.md"
+  },
+  {
+    "code": "159632",
+    "exchange": "SZSE",
+    "name": "纳斯达克ETF华安",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDX",
+      "unit": "1000000.00",
+      "nav_per_cu": "2256219.23",
+      "estimated_cash": "-8432.45",
+      "actual_cash": "-8432.45",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 103,
+      "flags": "1:103, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "华安纳斯达克100交易型开放式指数证券投资基金(QDII)更新的招募说明书(2026年第1号)",
+      "date": "2026-02-27",
+      "id": "AN202602261820064979",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202602261820064979_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159632.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        13,
+        46,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        102,
+        104
+      ],
+      "现金差额": [
+        13,
+        14,
+        46,
+        48,
+        49,
+        50,
+        51,
+        54,
+        55
+      ],
+      "汇率": [
+        82,
+        154
+      ],
+      "清算交收": [
+        49,
+        50,
+        54,
+        150
+      ]
+    },
+    "md": "纳斯达克100指数/159632_纳斯达克ETF华安_估值方案.md"
+  },
+  {
+    "code": "159655",
+    "exchange": "SZSE",
+    "name": "标普500ETF华夏",
+    "family": "标普500指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "SPXNTR",
+      "unit": "1000000.00",
+      "nav_per_cu": "1851473.48",
+      "estimated_cash": "583.53",
+      "actual_cash": "-342.82",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 502,
+      "flags": "1:410, 2:93",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "华夏标普500交易型开放式指数证券投资基金(QDII)招募说明书(更新)",
+      "date": "2026-05-29",
+      "id": "AN202605281822949075",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202605281822949075_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159655.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        8,
+        11,
+        12,
+        40,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48
+      ],
+      "现金差额": [
+        8,
+        40,
+        42,
+        43,
+        44,
+        47,
+        48
+      ],
+      "汇率": [
+        11,
+        40,
+        56,
+        139
+      ],
+      "清算交收": [
+        39,
+        43,
+        44,
+        47,
+        134
+      ]
+    },
+    "md": "标普500指数/159655_标普500ETF华夏_估值方案.md"
+  },
+  {
+    "code": "159659",
+    "exchange": "SZSE",
+    "name": "纳斯达克100ETF招商",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDX",
+      "unit": "1000000.00",
+      "nav_per_cu": "2144465.28",
+      "estimated_cash": "-2636.32",
+      "actual_cash": "-2636.32",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 103,
+      "flags": "1:103, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "招商纳斯达克100交易型开放式指数证券投资基金(QDII)更新的招募说明书(二零二六年第一号)",
+      "date": "2026-04-10",
+      "id": "AN202604091821095300",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202604091821095300_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159659.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        16,
+        49,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        61
+      ],
+      "现金差额": [
+        9,
+        10,
+        16,
+        49,
+        51,
+        52,
+        53,
+        54,
+        57,
+        58,
+        61,
+        97
+      ],
+      "汇率": [
+        48,
+        55,
+        56
+      ],
+      "清算交收": [
+        46,
+        52,
+        57
+      ]
+    },
+    "md": "纳斯达克100指数/159659_纳斯达克100ETF招商_估值方案.md"
+  },
+  {
+    "code": "159660",
+    "exchange": "SZSE",
+    "name": "纳指ETF汇添富",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDX",
+      "unit": "1000000.00",
+      "nav_per_cu": "2170199.10",
+      "estimated_cash": "-2759.70",
+      "actual_cash": "-2759.70",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 103,
+      "flags": "1:103, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "汇添富纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书(2026年3月20日更新)",
+      "date": "2026-03-20",
+      "id": "AN202603191820650331",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202603191820650331_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159660.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        11,
+        31,
+        32,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74
+      ],
+      "现金差额": [
+        10,
+        11,
+        66,
+        67,
+        68,
+        69,
+        70,
+        73,
+        74,
+        109
+      ],
+      "汇率": [
+        66,
+        72,
+        73
+      ],
+      "清算交收": [
+        63,
+        68,
+        69
+      ]
+    },
+    "md": "纳斯达克100指数/159660_纳指ETF汇添富_估值方案.md"
+  },
+  {
+    "code": "159696",
+    "exchange": "SZSE",
+    "name": "纳指ETF易方达",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDX",
+      "unit": "1000000.00",
+      "nav_per_cu": "1848493.61",
+      "estimated_cash": "2104.87",
+      "actual_cash": "2104.87",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 103,
+      "flags": "1:103, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "易方达纳斯达克100交易型开放式指数证券投资基金(QDII)更新的招募说明书",
+      "date": "2026-02-28",
+      "id": "AN202602271820108089",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202602271820108089_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159696.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        5,
+        12,
+        18,
+        19,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64
+      ],
+      "现金差额": [
+        5,
+        12,
+        55,
+        56,
+        57,
+        58,
+        59,
+        62,
+        63,
+        96
+      ],
+      "汇率": [
+        61
+      ],
+      "清算交收": [
+        57,
+        58,
+        62,
+        63,
+        119
+      ]
+    },
+    "md": "纳斯达克100指数/159696_纳指ETF易方达_估值方案.md"
+  },
+  {
+    "code": "159751",
+    "exchange": "SZSE",
+    "name": "港股通科技ETF鹏华",
+    "family": "港股通科技",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "931573",
+      "unit": "1000000.00",
+      "nav_per_cu": "885607.21",
+      "estimated_cash": "279.89",
+      "actual_cash": "261.04",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 50,
+      "flags": "1:50, 2:1",
+      "markets": "102, 103"
+    },
+    "prospectus": {
+      "title": "鹏华中证港股通科技交易型开放式指数证券投资基金更新的招募说明书",
+      "date": "2026-04-08",
+      "id": "AN202604071821046720",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202604071821046720_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159751.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        8,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        65,
+        66,
+        68
+      ],
+      "现金差额": [
+        8,
+        9,
+        26,
+        27,
+        28,
+        29,
+        30,
+        32,
+        33,
+        66
+      ],
+      "汇率": [
+        26,
+        50
+      ],
+      "清算交收": [
+        28,
+        29
+      ]
+    },
+    "md": "港股通科技/159751_港股通科技ETF鹏华_估值方案.md"
+  },
+  {
+    "code": "159792",
+    "exchange": "SZSE",
+    "name": "港股通互联网ETF富国",
+    "family": "港股通互联网",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "931637",
+      "unit": "1000000.00",
+      "nav_per_cu": "588441.55",
+      "estimated_cash": "152.78",
+      "actual_cash": "84.09",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 30,
+      "flags": "1:30, 2:1",
+      "markets": "102, 103"
+    },
+    "prospectus": {
+      "title": "富国中证港股通互联网交易型开放式指数证券投资基金招募说明书(更新)(二0二六年第二号)",
+      "date": "2026-06-11",
+      "id": "AN202606101823428500",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606101823428500_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159792.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        12,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        101,
+        103
+      ],
+      "现金差额": [
+        12,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        58,
+        59,
+        103
+      ],
+      "汇率": [
+        49,
+        56,
+        57,
+        82
+      ],
+      "清算交收": [
+        52,
+        53
+      ]
+    },
+    "md": "港股通互联网/159792_港股通互联网ETF富国_估值方案.md"
+  },
+  {
+    "code": "159866",
+    "exchange": "SZSE",
+    "name": "日经ETF工银",
+    "family": "日经225指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "N225",
+      "unit": "500000.00",
+      "nav_per_cu": "830208.32",
+      "estimated_cash": "1376.18",
+      "actual_cash": "-1552.56",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 1,
+      "flags": "1:1, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "工银瑞信大和日经225交易型开放式指数证券投资基金(QDII)更新的招募说明书(2026年第2号)",
+      "date": "2026-06-11",
+      "id": "AN202606101823431616",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606101823431616_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159866.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        7,
+        8,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        52
+      ],
+      "现金差额": [
+        7,
+        8,
+        41,
+        42,
+        43,
+        44,
+        45,
+        47,
+        48,
+        52
+      ],
+      "汇率": [
+        41
+      ],
+      "清算交收": [
+        43,
+        108
+      ]
+    },
+    "md": "日经225指数/159866_日经ETF工银_估值方案.md"
+  },
+  {
+    "code": "159941",
+    "exchange": "SZSE",
+    "name": "纳指ETF广发",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "NDX",
+      "unit": "1300000.00",
+      "nav_per_cu": "1935301.41",
+      "estimated_cash": "-4864.14",
+      "actual_cash": "-4864.14",
+      "switch": "申购=Y; 赎回=Y",
+      "mechanism": "",
+      "components": 103,
+      "flags": "1:103, 2:1",
+      "markets": "102, 9999"
+    },
+    "prospectus": {
+      "title": "广发纳斯达克100交易型开放式指数证券投资基金更新的招募说明书",
+      "date": "2026-07-06",
+      "id": "AN202607051826729063",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202607051826729063_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_159941.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        17,
+        18,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        66
+      ],
+      "现金差额": [
+        10,
+        50,
+        51,
+        52,
+        53,
+        54,
+        56,
+        57,
+        58,
+        66
+      ],
+      "汇率": [
+        50,
+        73
+      ],
+      "清算交收": [
+        52,
+        53,
+        57,
+        68,
+        69,
+        119
+      ]
+    },
+    "md": "纳斯达克100指数/159941_纳指ETF广发_估值方案.md"
+  },
+  {
+    "code": "513000",
+    "exchange": "SSE",
+    "name": "225ETF",
+    "family": "日经225指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "1115067.12",
+      "estimated_cash": "-952.74",
+      "actual_cash": "-952.74",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 1,
+      "flags": "1:1",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "易方达奥明日经225交易型开放式指数证券投资基金(QDII)更新的招募说明书",
+      "date": "2025-11-27",
+      "id": "AN202511261788820580",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202511261788820580_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513000.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        4,
+        10,
+        11,
+        16,
+        52,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62
+      ],
+      "现金差额": [
+        4,
+        10,
+        11,
+        52,
+        54,
+        55,
+        56,
+        57,
+        60,
+        61,
+        96
+      ],
+      "汇率": [
+        58,
+        59
+      ],
+      "清算交收": [
+        55,
+        56
+      ]
+    },
+    "md": "日经225指数/513000_225ETF_估值方案.md"
+  },
+  {
+    "code": "513030",
+    "exchange": "SSE",
+    "name": "德国ETF",
+    "family": "德国DAX指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "882743.32",
+      "estimated_cash": "-1587.31",
+      "actual_cash": "-1587.31",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 40,
+      "flags": "1:40",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "华安国际龙头(DAX)交易型开放式指数证券投资基金更新的招募说明书(2026年第1号)",
+      "date": "2026-06-26",
+      "id": "AN202606251823856672",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606251823856672_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513030.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        3,
+        11,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        61,
+        100,
+        102
+      ],
+      "现金差额": [
+        11,
+        51,
+        53,
+        54,
+        55,
+        57,
+        58,
+        59,
+        61
+      ],
+      "汇率": [
+        81
+      ],
+      "清算交收": [
+        53,
+        54,
+        58,
+        91,
+        163
+      ]
+    },
+    "md": "德国DAX指数/513030_德国ETF_估值方案.md"
+  },
+  {
+    "code": "513050",
+    "exchange": "SSE",
+    "name": "中概互联",
+    "family": "中概互联网",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1102073.75",
+      "estimated_cash": "147.04",
+      "actual_cash": "-288.35",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 35,
+      "flags": "1:34, 2:1",
+      "markets": "103, 9999"
+    },
+    "prospectus": {
+      "title": "易方达中证海外中国互联网50交易型开放式指数证券投资基金更新的招募说明书",
+      "date": "2026-06-01",
+      "id": "AN202605311823107586",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202605311823107586_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513050.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        4,
+        10,
+        16,
+        19,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63
+      ],
+      "现金差额": [
+        4,
+        10,
+        54,
+        55,
+        56,
+        57,
+        60,
+        61,
+        62,
+        63,
+        113
+      ],
+      "汇率": [
+        59,
+        70
+      ],
+      "清算交收": [
+        56,
+        57,
+        61,
+        120
+      ]
+    },
+    "md": "中概互联网/513050_中概互联_估值方案.md"
+  },
+  {
+    "code": "513080",
+    "exchange": "SSE",
+    "name": "法国ETF",
+    "family": "法国CAC40",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "859626.98",
+      "estimated_cash": "-1805.89",
+      "actual_cash": "-1806.37",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 40,
+      "flags": "1:40",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "华安法国CAC40交易型开放式指数证券投资基金(QDII)更新的招募说明书(2026年第2号)",
+      "date": "2026-06-26",
+      "id": "AN202606251823856666",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606251823856666_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513080.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        3,
+        12,
+        47,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        60,
+        100,
+        101
+      ],
+      "现金差额": [
+        12,
+        49,
+        50,
+        51,
+        52,
+        55,
+        56,
+        57,
+        60
+      ],
+      "汇率": [
+        81
+      ],
+      "清算交收": [
+        50,
+        51,
+        52,
+        56
+      ]
+    },
+    "md": "法国CAC40/513080_法国ETF_估值方案.md"
+  },
+  {
+    "code": "513090",
+    "exchange": "SSE",
+    "name": "香港证券",
+    "family": "香港金融",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "921230.34",
+      "estimated_cash": "7386.39",
+      "actual_cash": "6629.01",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 17,
+      "flags": "1:17",
+      "markets": "103"
+    },
+    "prospectus": {
+      "title": "易方达中证香港证券投资主题交易型开放式指数证券投资基金更新的招募说明书",
+      "date": "2026-06-26",
+      "id": "AN202606251823859042",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606251823859042_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513090.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        80,
+        81,
+        85
+      ],
+      "现金差额": [
+        4,
+        10,
+        37,
+        38,
+        39,
+        40,
+        41,
+        44,
+        45,
+        46,
+        92
+      ],
+      "汇率": [
+        37
+      ],
+      "清算交收": [
+        40,
+        83,
+        115
+      ]
+    },
+    "md": "香港金融/513090_香港证券_估值方案.md"
+  },
+  {
+    "code": "513100",
+    "exchange": "SSE",
+    "name": "纳指ETF",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1986284.5",
+      "estimated_cash": "-6171.92",
+      "actual_cash": "-6171.92",
+      "switch": "3",
+      "mechanism": "0",
+      "components": 103,
+      "flags": "1:103",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "纳斯达克100交易型开放式指数证券投资基金更新招募说明书(2025年第四号)",
+      "date": "2025-12-22",
+      "id": "AN202512211805221269",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202512211805221269_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513100.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        5,
+        10,
+        11,
+        14,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        50
+      ],
+      "现金差额": [
+        10,
+        11,
+        41,
+        42,
+        43,
+        44,
+        46,
+        47,
+        50
+      ],
+      "汇率": [
+        61
+      ],
+      "清算交收": [
+        43,
+        44,
+        47
+      ]
+    },
+    "md": "纳斯达克100指数/513100_纳指ETF_估值方案.md"
+  },
+  {
+    "code": "513110",
+    "exchange": "SSE",
+    "name": "纳指100",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "2281578.51",
+      "estimated_cash": "-581.87",
+      "actual_cash": "-581.87",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 103,
+      "flags": "1:103",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "华泰柏瑞纳斯达克100交易型开放式指数证券投资基金(QDII)更新的招募说明书2026年第1号",
+      "date": "2026-02-06",
+      "id": "AN202602051819793703",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202602051819793703_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513110.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        31,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        73
+      ],
+      "现金差额": [
+        9,
+        10,
+        31,
+        33,
+        34,
+        35,
+        36,
+        38,
+        39
+      ],
+      "汇率": [
+        31,
+        32,
+        37,
+        38,
+        59,
+        105,
+        109
+      ],
+      "清算交收": [
+        34,
+        35,
+        38
+      ]
+    },
+    "md": "纳斯达克100指数/513110_纳指100_估值方案.md"
+  },
+  {
+    "code": "513220",
+    "exchange": "SSE",
+    "name": "互联网30",
+    "family": "中概互联网",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "960150.26",
+      "estimated_cash": "220.29",
+      "actual_cash": "-129.04",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 30,
+      "flags": "1:30",
+      "markets": "101, 102, 103, 9999"
+    },
+    "prospectus": {
+      "title": "招商中证全球中国互联网交易型开放式指数证券投资基金(QDII)更新的招募说明书(二零二六年第一号)",
+      "date": "2026-07-03",
+      "id": "AN202607021826667303",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202607021826667303_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513220.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        10,
+        19,
+        60,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        71
+      ],
+      "现金差额": [
+        10,
+        19,
+        60,
+        62,
+        63,
+        64,
+        65,
+        67,
+        68,
+        71,
+        108
+      ],
+      "汇率": [],
+      "清算交收": [
+        15,
+        57,
+        63,
+        67,
+        68,
+        139
+      ]
+    },
+    "md": "中概互联网/513220_互联网30_估值方案.md"
+  },
+  {
+    "code": "513230",
+    "exchange": "SSE",
+    "name": "H股消费",
+    "family": "港股通消费",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "841321.1",
+      "estimated_cash": "10677.66",
+      "actual_cash": "10899.41",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 50,
+      "flags": "1:50",
+      "markets": "103"
+    },
+    "prospectus": {
+      "title": "华夏中证港股通消费主题交易型开放式指数证券投资基金招募说明书(更新)",
+      "date": "2026-05-29",
+      "id": "AN202605281822952677",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202605281822952677_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513230.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        8,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        55,
+        94,
+        95,
+        102
+      ],
+      "现金差额": [
+        8,
+        45,
+        46,
+        47,
+        48,
+        50,
+        51,
+        55
+      ],
+      "汇率": [
+        55,
+        70,
+        135,
+        138
+      ],
+      "清算交收": [
+        46,
+        88
+      ]
+    },
+    "md": "港股通消费/513230_H股消费_估值方案.md"
+  },
+  {
+    "code": "513290",
+    "exchange": "SSE",
+    "name": "纳指生物",
+    "family": "美股生物科技",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "834955.43",
+      "estimated_cash": "15714.42",
+      "actual_cash": "15923.15",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 251,
+      "flags": "1:250, 2:1",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "汇添富纳斯达克生物科技交易型开放式指数证券投资基金(QDII)更新招募说明书(2025年11月13日更新)",
+      "date": "2025-11-13",
+      "id": "AN202511121780025867",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202511121780025867_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513290.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        10,
+        29,
+        30,
+        31,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75
+      ],
+      "现金差额": [
+        9,
+        10,
+        66,
+        67,
+        68,
+        69,
+        70,
+        73,
+        74,
+        111
+      ],
+      "汇率": [
+        66,
+        72,
+        73
+      ],
+      "清算交收": [
+        63,
+        68,
+        70
+      ]
+    },
+    "md": "美股生物科技/513290_纳指生物_估值方案.md"
+  },
+  {
+    "code": "513300",
+    "exchange": "SSE",
+    "name": "纳斯达克",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "750000",
+      "nav_per_cu": "1857436.49",
+      "estimated_cash": "1535.82",
+      "actual_cash": "-88.24",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 102,
+      "flags": "1:102",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "华夏纳斯达克100交易型开放式指数证券投资基金(QDII)招募说明书(更新)",
+      "date": "2026-05-29",
+      "id": "AN202605281822956801",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202605281822956801_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513300.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        8,
+        11,
+        12,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        100
+      ],
+      "现金差额": [
+        8,
+        40,
+        41,
+        42,
+        43,
+        44,
+        46,
+        47
+      ],
+      "汇率": [
+        11,
+        39,
+        40,
+        56
+      ],
+      "清算交收": [
+        43,
+        46,
+        47
+      ]
+    },
+    "md": "纳斯达克100指数/513300_纳斯达克_估值方案.md"
+  },
+  {
+    "code": "513350",
+    "exchange": "SSE",
+    "name": "标普油气ETF富国",
+    "family": "油气类",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1153192.64",
+      "estimated_cash": "-759.29",
+      "actual_cash": "-774.88",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 51,
+      "flags": "1:51",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "富国标普石油天然气勘探及生产精选行业交易型开放式指数证券投资基金(QDII)招募说明书(更新)(二0二五年第四号)",
+      "date": "2025-10-30",
+      "id": "AN202510291771364704",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202510291771364704_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513350.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        12,
+        17,
+        18,
+        19,
+        66,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77
+      ],
+      "现金差额": [
+        12,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        75,
+        76,
+        77
+      ],
+      "汇率": [
+        66,
+        74,
+        75
+      ],
+      "清算交收": [
+        70,
+        71,
+        72,
+        75,
+        76,
+        162
+      ]
+    },
+    "md": "油气类/513350_标普油气ETF富国_估值方案.md"
+  },
+  {
+    "code": "513360",
+    "exchange": "SSE",
+    "name": "教育ETF",
+    "family": "全球中国教育",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1500000",
+      "nav_per_cu": "661656.69",
+      "estimated_cash": "-30.61",
+      "actual_cash": "4163.41",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 32,
+      "flags": "1:32",
+      "markets": "101, 102, 103, 9999"
+    },
+    "prospectus": {
+      "title": "博时中证全球中国教育主题交易型开放式指数证券投资基金(QDII)更新招募说明书",
+      "date": "2025-11-17",
+      "id": "AN202511161782509546",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202511161782509546_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513360.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        5,
+        12,
+        13,
+        17,
+        19,
+        65,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        90
+      ],
+      "现金差额": [
+        12,
+        13,
+        19,
+        65,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        84,
+        85,
+        86,
+        90
+      ],
+      "汇率": [
+        83,
+        84,
+        98
+      ],
+      "清算交收": [
+        21,
+        79,
+        81,
+        171
+      ]
+    },
+    "md": "全球中国教育/513360_教育ETF_估值方案.md"
+  },
+  {
+    "code": "513390",
+    "exchange": "SSE",
+    "name": "纳指基金",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "2229349.13",
+      "estimated_cash": "331.14",
+      "actual_cash": "-2427.28",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 103,
+      "flags": "1:103",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "博时纳斯达克100交易型开放式指数证券投资基金(QDII)更新招募说明书",
+      "date": "2025-11-17",
+      "id": "AN202511161782507489",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202511161782507489_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513390.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        5,
+        12,
+        13,
+        17,
+        19,
+        60,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70
+      ],
+      "现金差额": [
+        12,
+        13,
+        19,
+        60,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69
+      ],
+      "汇率": [
+        68,
+        69,
+        83
+      ],
+      "清算交收": [
+        63,
+        67,
+        156
+      ]
+    },
+    "md": "纳斯达克100指数/513390_纳指基金_估值方案.md"
+  },
+  {
+    "code": "513400",
+    "exchange": "SSE",
+    "name": "道琼斯",
+    "family": "道琼斯工业",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1295077.73",
+      "estimated_cash": "-23224.83",
+      "actual_cash": "-24019.27",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 30,
+      "flags": "1:30",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "鹏华道琼斯工业平均交易型开放式指数证券投资基金(QDII)更新的招募说明书",
+      "date": "2025-12-05",
+      "id": "AN202512041793911638",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202512041793911638_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513400.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        3,
+        9,
+        12,
+        13,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47
+      ],
+      "现金差额": [
+        8,
+        9,
+        12,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        46,
+        47
+      ],
+      "汇率": [
+        39,
+        45,
+        46,
+        56
+      ],
+      "清算交收": [
+        42,
+        43,
+        45,
+        46
+      ]
+    },
+    "md": "道琼斯工业/513400_道琼斯_估值方案.md"
+  },
+  {
+    "code": "513500",
+    "exchange": "SSE",
+    "name": "标普500",
+    "family": "标普500指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "2409292.79",
+      "estimated_cash": "30426.57",
+      "actual_cash": "30347.39",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 503,
+      "flags": "1:446, 2:57",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "博时标普500交易型开放式指数证券投资基金更新招募说明书",
+      "date": "2025-11-17",
+      "id": "AN202511161782507523",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202511161782507523_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513500.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        3,
+        10,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        56,
+        93,
+        94
+      ],
+      "现金差额": [
+        10,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        56
+      ],
+      "汇率": [
+        53
+      ],
+      "清算交收": [
+        48,
+        52
+      ]
+    },
+    "md": "标普500指数/513500_标普500_估值方案.md"
+  },
+  {
+    "code": "513520",
+    "exchange": "SSE",
+    "name": "日经ETF",
+    "family": "日经225指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "1111109.88",
+      "estimated_cash": "-936.18",
+      "actual_cash": "-936.18",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 1,
+      "flags": "1:1",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "华夏野村日经225交易型开放式指数证券投资基金(QDII)招募说明书(更新)",
+      "date": "2026-05-29",
+      "id": "AN202605281822957285",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202605281822957285_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513520.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        8,
+        9,
+        10,
+        39,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        97
+      ],
+      "现金差额": [
+        8,
+        39,
+        41,
+        42,
+        43,
+        45,
+        46
+      ],
+      "汇率": [
+        39,
+        55
+      ],
+      "清算交收": [
+        42
+      ]
+    },
+    "md": "日经225指数/513520_日经ETF_估值方案.md"
+  },
+  {
+    "code": "513650",
+    "exchange": "SSE",
+    "name": "标普ETF",
+    "family": "标普500指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1834913.08",
+      "estimated_cash": "-156.66",
+      "actual_cash": "-1143.46",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 503,
+      "flags": "1:429, 2:74",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "南方标普500交易型开放式指数证券投资基金(QDII)招募说明书(更新)",
+      "date": "2026-01-14",
+      "id": "AN202601131816986056",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202601131816986056_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513650.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        49,
+        94
+      ],
+      "现金差额": [
+        9,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        44,
+        45,
+        49
+      ],
+      "汇率": [
+        37,
+        43,
+        72,
+        137
+      ],
+      "清算交收": [
+        39,
+        40,
+        41,
+        45,
+        84
+      ]
+    },
+    "md": "标普500指数/513650_标普ETF_估值方案.md"
+  },
+  {
+    "code": "513750",
+    "exchange": "SSE",
+    "name": "港股非银",
+    "family": "香港金融",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "736589.36",
+      "estimated_cash": "6660.43",
+      "actual_cash": "6779.36",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 35,
+      "flags": "1:35",
+      "markets": "103"
+    },
+    "prospectus": {
+      "title": "广发中证港股通非银行金融主题交易型开放式指数证券投资基金更新的招募说明书",
+      "date": "2026-07-06",
+      "id": "AN202607051826730010",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202607051826730010_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513750.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        3,
+        4,
+        11,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        82,
+        83,
+        85
+      ],
+      "现金差额": [
+        3,
+        11,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        39,
+        40,
+        95
+      ],
+      "汇率": [
+        31,
+        38,
+        62
+      ],
+      "清算交收": [
+        34,
+        37
+      ]
+    },
+    "md": "香港金融/513750_港股非银_估值方案.md"
+  },
+  {
+    "code": "513850",
+    "exchange": "SSE",
+    "name": "美国50",
+    "family": "美国50指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1710422.38",
+      "estimated_cash": "5712.45",
+      "actual_cash": "5683.18",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 50,
+      "flags": "1:50",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "易方达MSCI美国50交易型开放式指数证券投资基金(QDII)更新的招募说明书",
+      "date": "2026-04-30",
+      "id": "AN202604291821770015",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202604291821770015_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513850.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        4,
+        11,
+        18,
+        19,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63
+      ],
+      "现金差额": [
+        4,
+        11,
+        55,
+        56,
+        57,
+        58,
+        61,
+        62,
+        94
+      ],
+      "汇率": [
+        59,
+        60
+      ],
+      "清算交收": [
+        56,
+        58,
+        61,
+        120
+      ]
+    },
+    "md": "美国50指数/513850_美国50_估值方案.md"
+  },
+  {
+    "code": "513870",
+    "exchange": "SSE",
+    "name": "纳指指数",
+    "family": "纳斯达克100指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260708",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1891365.04",
+      "estimated_cash": "-1631.07",
+      "actual_cash": "-1655.58",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 103,
+      "flags": "1:103",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "富国纳斯达克100交易型开放式指数证券投资基金(QDII)招募说明书(更新)(二0二五年第四号)",
+      "date": "2025-11-13",
+      "id": "AN202511121780028083",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202511121780028083_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513870.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        12,
+        17,
+        18,
+        19,
+        48,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59
+      ],
+      "现金差额": [
+        12,
+        50,
+        51,
+        52,
+        54,
+        57,
+        58,
+        59
+      ],
+      "汇率": [
+        48,
+        56,
+        57
+      ],
+      "清算交收": [
+        52,
+        54,
+        57,
+        58,
+        167
+      ]
+    },
+    "md": "纳斯达克100指数/513870_纳指指数_估值方案.md"
+  },
+  {
+    "code": "513880",
+    "exchange": "SSE",
+    "name": "日经225",
+    "family": "日经225指数",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "",
+      "unit": "500000",
+      "nav_per_cu": "1036524.77",
+      "estimated_cash": "-693.85",
+      "actual_cash": "-693.85",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 1,
+      "flags": "1:1",
+      "markets": "9999"
+    },
+    "prospectus": {
+      "title": "华安三菱日联日经225交易型开放式指数证券投资基金(QDII)更新的招募说明书(2026年第2号)",
+      "date": "2026-06-26",
+      "id": "AN202606251823856663",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202606251823856663_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513880.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        3,
+        4,
+        12,
+        48,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        61,
+        100,
+        101
+      ],
+      "现金差额": [
+        12,
+        48,
+        50,
+        51,
+        52,
+        53,
+        56,
+        57,
+        61
+      ],
+      "汇率": [
+        81
+      ],
+      "清算交收": [
+        51
+      ]
+    },
+    "md": "日经225指数/513880_日经225_估值方案.md"
+  },
+  {
+    "code": "513990",
+    "exchange": "SSE",
+    "name": "港股通综",
+    "family": "港股通综合",
+    "pcf": {
+      "trading_day": "20260710",
+      "pre_trading_day": "20260709",
+      "underlying": "",
+      "unit": "1000000",
+      "nav_per_cu": "1072368.64",
+      "estimated_cash": "-1308.84",
+      "actual_cash": "-895.32",
+      "switch": "1",
+      "mechanism": "0",
+      "components": 610,
+      "flags": "1:610",
+      "markets": "103"
+    },
+    "prospectus": {
+      "title": "招商上证港股通交易型开放式指数证券投资基金更新的招募说明书(二零二六年第一号)",
+      "date": "2026-02-13",
+      "id": "AN202602121819904809",
+      "pdf_url": "https://pdf.dfcfw.com/pdf/H2_AN202602121819904809_1.pdf",
+      "announcement_url": "https://fundf10.eastmoney.com/jjgg_513990.html"
+    },
+    "keyword_pages": {
+      "现金替代": [
+        9,
+        10,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        81
+      ],
+      "现金差额": [
+        9,
+        10,
+        30,
+        31,
+        32,
+        33,
+        34,
+        37,
+        38,
+        81,
+        91
+      ],
+      "汇率": [
+        30,
+        36
+      ],
+      "清算交收": [
+        27,
+        33,
+        77
+      ]
+    },
+    "md": "港股通综合/513990_港股通综_估值方案.md"
+  }
+]

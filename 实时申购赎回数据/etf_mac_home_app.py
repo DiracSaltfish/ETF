@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import socket
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from typing import Any
 import uvicorn
 from PyQt6.QtCore import QThread, QTimer, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QDesktopServices, QFont
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket, QNetworkRequest
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -22,6 +23,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStyle,
     QSystemTrayIcon,
@@ -194,6 +196,10 @@ class MacHomeWindow(RemoteClientWindow):
         self.service_label = QLabel("● 本机服务准备中")
         row.addWidget(self.service_label)
         row.addSpacing(12)
+        self.wind_status_label = QLabel("● 正在检测 Wind")
+        self.wind_status_label.setStyleSheet("color: #68758a;")
+        row.addWidget(self.wind_status_label)
+        row.addSpacing(12)
         self.lan_url = f"http://{local_ip_address()}:6787/"
         self.lan_label = QLabel(f"内网页面：{self.lan_url}")
         self.lan_label.setTextInteractionFlags(
@@ -205,9 +211,109 @@ class MacHomeWindow(RemoteClientWindow):
         self.open_web_button.clicked.connect(self.open_web_page)
         self.log_button = QPushButton("服务日志")
         self.log_button.clicked.connect(self.show_log_dialog)
+        self.start_wind_button = QPushButton("启动 Wind")
+        self.start_wind_button.clicked.connect(self.start_wind_from_ui)
+        self.shutdown_wind_button = QPushButton("关闭 Wind 并清理")
+        self.shutdown_wind_button.clicked.connect(self.shutdown_wind_from_ui)
+        self.start_wind_button.setEnabled(False)
+        self.shutdown_wind_button.setEnabled(False)
+        row.addWidget(self.start_wind_button)
+        row.addWidget(self.shutdown_wind_button)
         row.addWidget(self.open_web_button)
         row.addWidget(self.log_button)
         self.root_layout.insertWidget(0, card)
+
+    def _apply_wind_state(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        state = str(value.get("state") or "unknown")
+        label = str(value.get("label") or "Wind 状态未知")
+        running = bool(value.get("running"))
+        busy = state in {"launching", "subscribing", "stopping", "quitting", "cleaning"}
+        if state in {"ready", "monitoring"}:
+            color = "#168553"
+        elif state in {"launching", "subscribing", "stopping", "quitting", "cleaning", "running"}:
+            color = "#d97706"
+        elif state == "error":
+            color = "#c53b45"
+        else:
+            color = "#68758a"
+        self.wind_status_label.setText(f"● {label}")
+        self.wind_status_label.setStyleSheet(f"color: {color};")
+        details = [str(value.get("last_action") or "")]
+        if value.get("last_error"):
+            details.append(f"错误：{value['last_error']}")
+        if value.get("cleanup_deleted_count") is not None:
+            details.append(f"最近清理 {int(value.get('cleanup_deleted_count') or 0)} 个 dylib")
+        self.wind_status_label.setToolTip("\n".join(item for item in details if item))
+        self.start_wind_button.setEnabled(not busy and not running)
+        self.shutdown_wind_button.setEnabled(not busy)
+        self.remote_start_button.setEnabled(not busy and running)
+        self.remote_stop_button.setEnabled(not busy and running)
+
+    def _apply_snapshot(self, event: dict[str, Any]) -> None:
+        super()._apply_snapshot(event)
+        self._apply_wind_state(event.get("wind"))
+
+    def _on_text_message(self, text: str) -> None:
+        super()._on_text_message(text)
+        try:
+            event = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        self._apply_wind_state(event.get("wind"))
+
+    def start_wind_from_ui(self) -> None:
+        self.wind_status_label.setText("● 正在请求启动 Wind")
+        self.start_wind_button.setEnabled(False)
+        self.shutdown_wind_button.setEnabled(False)
+        self._request(
+            "POST", "/api/v1/wind/start", request_kind="wind-action"
+        )
+
+    def shutdown_wind_from_ui(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "关闭 Wind 并清理",
+            "将先停止全部 Wind 订阅，再关闭 Wind；仅在确认进程完全退出后清理临时 dylib。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.wind_status_label.setText("● 正在请求关闭 Wind")
+        self.start_wind_button.setEnabled(False)
+        self.shutdown_wind_button.setEnabled(False)
+        self._request(
+            "POST",
+            "/api/v1/wind/shutdown-cleanup",
+            request_kind="wind-action",
+        )
+
+    def _http_finished(self, reply: Any) -> None:
+        request_kind = str(reply.property("request_kind") or "")
+        status = reply.attribute(
+            QNetworkRequest.Attribute.HttpStatusCodeAttribute
+        )
+        super()._http_finished(reply)
+        if request_kind != "wind-action":
+            return
+        if status is None or int(status) >= 400:
+            self._apply_wind_state(
+                {
+                    "state": "error",
+                    "label": "Wind 控制请求失败",
+                    "running": False,
+                    "last_error": "请查看页面底部或服务日志",
+                }
+            )
+            if status is not None:
+                QTimer.singleShot(
+                    0,
+                    lambda: self._request(
+                        "GET", "/api/v1/wind/status", request_kind="wind-status"
+                    ),
+                )
 
     def _create_tray_icon(self) -> None:
         icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
@@ -332,18 +438,47 @@ class MacHomeWindow(RemoteClientWindow):
             )
             self._close_notice_shown = True
 
-    def stop_owned_server(self) -> None:
+    def _server_shutdown_timeout_ms(self) -> int:
+        config = ConfigStore(self.config_path)
+        symbol_count = max(1, len(config.symbols))
+        wind = config.data.get("wind", {})
+        if not isinstance(wind, dict):
+            wind = {}
+        # ProbeController.stop_many uses max(45, 20 + symbols * 8) seconds.
+        # Add the configured Wind termination timeout and a bounded cleanup/
+        # event-loop margin so the GUI cannot truncate the server's safe exit.
+        stop_seconds = max(45.0, 20.0 + symbol_count * 8.0)
+        terminate_seconds = max(
+            1.0, float(wind.get("terminate_timeout_seconds", 30))
+        )
+        return int((stop_seconds + terminate_seconds + 30.0) * 1000)
+
+    def stop_owned_server(self) -> bool:
         if self.server_thread is None or not self.server_thread.isRunning():
-            return
+            return True
         self.server_thread.request_stop()
-        self.server_thread.wait(60000)
+        if self.server_thread.wait(self._server_shutdown_timeout_ms()):
+            return True
+        self.footer_label.setText(
+            "服务仍在执行安全停订/关闭/清理，已取消退出，请稍后重试。"
+        )
+        self.tray.showMessage(
+            "ETF 监控主机尚未退出",
+            "正在等待 Wind 安全关闭与清理，请稍后再次选择退出。",
+            QSystemTrayIcon.MessageIcon.Warning,
+            5000,
+        )
+        return False
 
     def quit_completely(self) -> None:
         self.allow_quit = True
         self.want_connection = False
         self._save_settings()
         self.socket.close()
-        self.stop_owned_server()
+        if not self.stop_owned_server():
+            self.allow_quit = False
+            self.show_from_tray()
+            return
         self.tray.hide()
         QApplication.quit()
 

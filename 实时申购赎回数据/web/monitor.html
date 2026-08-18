@@ -15,7 +15,7 @@
       padding:14px 16px; margin-bottom:14px; box-shadow:0 1px 2px #1720330a; }
     .toolbar { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
     .grow { flex:1; }
-    button,input { font:inherit; border-radius:7px; border:1px solid #cbd5e1;
+    button,input,select { font:inherit; border-radius:7px; border:1px solid #cbd5e1;
       background:#fff; color:var(--ink); padding:8px 13px; }
     input { min-width:170px; outline:none; }
     input:focus { border-color:var(--blue); box-shadow:0 0 0 3px #2f6feb18; }
@@ -36,6 +36,10 @@
     td.change { text-align:left; white-space:normal; min-width:260px; }
     .positive { color:var(--green); font-weight:700; }
     .negative { color:var(--red); font-weight:700; }
+    td.quota-available, td.quota-unavailable { font-weight:750; }
+    td.quota-available { background:#166534; }
+    td.quota-available { color:#fff; }
+    td.quota-unavailable { background:#fde7e7; color:#9f1239; }
     tbody tr { cursor:pointer; }
     tbody tr:hover { background:#f7faff; }
     .modal { position:fixed; inset:0; z-index:30; display:none; place-items:center;
@@ -63,6 +67,7 @@
 <main>
   <section class="card toolbar">
     <button id="pull" class="primary">拉取当前全量</button>
+    <button id="history">变化历史…</button>
     <button id="sound">启用声音</button>
     <label for="soundRepeat">重复</label>
     <input id="soundRepeat" type="number" min="1" max="10" value="3" style="min-width:74px;width:74px" title="轻亮三音每次含 3 响，默认重复 3 次，共 9 响">
@@ -77,7 +82,7 @@
       <thead><tr>
         <th>标的</th><th>名称</th><th>主机状态</th><th>申购份额</th><th>赎回份额</th>
         <th>轧差份额</th><th>申购篮子</th><th>赎回篮子</th><th>轧差篮子</th>
-        <th>申购额度</th><th>机会判断</th><th>更新时间</th><th>最近变化</th>
+        <th>可申购篮子</th><th>机会判断</th><th>更新时间</th><th>最近变化</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -94,6 +99,22 @@
       <div class="table-wrap"><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="pcfSummary"></tbody></table></div>
       <div class="table-wrap"><table><thead id="pcfComponentHead"></thead><tbody id="pcfComponents"></tbody></table></div>
     </div>
+  </div>
+</div>
+<div id="historyModal" class="modal" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="grow"><h2>变化历史</h2><div id="historySummary" class="muted"></div></div>
+      <button id="historyClose">关闭</button>
+    </div>
+    <div class="toolbar" style="margin-bottom:12px">
+      <label for="historyDate">日期</label><input id="historyDate" type="date">
+      <label for="historySymbol">标的</label><select id="historySymbol"></select>
+      <button id="historyRefresh" class="primary">查询</button>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>变化时间</th><th>标的</th><th>名称</th>
+      <th>申购份额</th><th>赎回份额</th><th>轧差份额</th><th>变化内容</th><th>机会判断</th>
+    </tr></thead><tbody id="historyRows"></tbody></table></div>
   </div>
 </div>
 <script>
@@ -134,29 +155,36 @@
 
   function creationQuota(item) {
     const pcf=item.pcf||{}, values=item.values||{};
-    const creation=Number(values.etfbuyamount), net=Number(values.netamount);
+    const creation=Number(values.etfbuyamount), net=Number(values.netamount), unit=Number(pcf.creation_redemption_unit);
     const creationLimit=Number(pcf.creation_limit), netLimit=Number(pcf.net_creation_limit);
     if(values.etfbuyamount===null||values.etfbuyamount===undefined||!Number.isFinite(creation)||
        values.netamount===null||values.netamount===undefined||!Number.isFinite(net))
       return {label:'待确认',className:'',reason:'实时申购份额或轧差份额尚未就绪'};
     if(pcf.status!=='ready')
       return {label:'待确认',className:'',reason:'当日 PCF 尚未就绪'};
+    if(pcf.creation_allowed===false)
+      return {label:'0',className:'quota-unavailable',reason:'PCF 明确关闭申购'};
+    if(pcf.creation_allowed!==true)
+      return {label:'待确认',className:'',reason:'PCF 未明确开放申购'};
     if(pcf.creation_limit===null||pcf.creation_limit===undefined||!Number.isFinite(creationLimit)||
        pcf.net_creation_limit===null||pcf.net_creation_limit===undefined||!Number.isFinite(netLimit))
       return {label:'待确认',className:'',reason:'PCF 的累计或净申购上限字段不完整'};
     if(creationLimit>0&&creation>=creationLimit)
-      return {label:'已满',className:'negative',reason:`当前累计申购 ${fmt(creation)}，已达到 PCF 累计上限 ${fmt(creationLimit)}`};
+      return {label:'0',className:'quota-unavailable',reason:`当前累计申购 ${fmt(creation)}，已达到 PCF 累计上限 ${fmt(creationLimit)}`};
     if(netLimit>0&&net>=netLimit)
-      return {label:'已满',className:'negative',reason:`当前净申购 ${fmt(net)}，已达到 PCF 净申购上限 ${fmt(netLimit)}`};
-    if(pcf.creation_allowed===false)
-      return {label:'申购关闭',className:'negative',reason:'PCF 明确关闭申购'};
+      return {label:'0',className:'quota-unavailable',reason:`当前净申购 ${fmt(net)}，已达到 PCF 净申购上限 ${fmt(netLimit)}`};
+    if(!Number.isFinite(unit)||unit<=0)
+      return {label:'待确认',className:'',reason:'PCF 缺少最小申赎单位'};
     const constraints=[];
     if(creationLimit>0) constraints.push(['累计',Math.max(0,creationLimit-creation)]);
     if(netLimit>0) constraints.push(['净申购',Math.max(0,netLimit-net)]);
     if(!constraints.length)
-      return {label:'未满',className:'positive',reason:'PCF 未设置正数累计申购或净申购上限'};
+      return {label:'不限',className:'quota-available',reason:'PCF 未设置正数累计申购或净申购上限'};
     constraints.sort((a,b)=>a[1]-b[1]);
-    return {label:'未满',className:'positive',reason:`累计申购 ${fmt(creation)}，净申购 ${fmt(net)}；距离 PCF ${constraints[0][0]}限额还剩 ${fmt(constraints[0][1])}`};
+    const remaining=constraints[0][1], baskets=Math.max(0,Math.floor(remaining/unit+1e-9));
+    if(baskets<1)
+      return {label:'0',className:'quota-unavailable',reason:`距离 PCF ${constraints[0][0]}限额仅剩 ${fmt(remaining)}，不足一个完整申购篮子`};
+    return {label:String(baskets),className:'quota-available',reason:`累计申购 ${fmt(creation)}，净申购 ${fmt(net)}；可申购 ${baskets} 篮子（${fmt(remaining)}）`};
   }
 
   function render() {
@@ -186,6 +214,44 @@
     render();
     $('summary').textContent=event.last_error ||
       `${state.items.size} 个标的 · 主机${event.monitoring?'监控中':'未监控'} · ${event.server_time||''}`;
+  }
+
+  const historyTime = value => {
+    let text=String(value||'').trim(); if(!text) return '—';
+    if(text.includes('T')) text=text.split('T',2)[1];
+    if(text.includes('+')) text=text.split('+',1)[0];
+    if(text.endsWith('Z')) text=text.slice(0,-1);
+    return text.slice(0,12).replace(/\.$/,'');
+  };
+
+  async function refreshHistory() {
+    const day=$('historyDate').value, symbol=$('historySymbol').value;
+    $('historySummary').textContent='正在查询…';
+    try {
+      const query=new URLSearchParams({date:day,limit:'5000'});
+      if(symbol) query.set('symbol',symbol);
+      const payload=await api(`/api/v1/history?${query}`);
+      const items=Array.isArray(payload.items)?payload.items:[];
+      $('historyRows').innerHTML=items.map(item=>{
+        const current=item.current||{}, opportunity=item.opportunity||{};
+        const changes=(item.changes||[]).map(change=>change.text||'').filter(Boolean).join('；')||'—';
+        return `<tr><td>${esc(historyTime(item.event_time))}</td><td>${esc(item.symbol||'')}</td>
+          <td>${esc(item.name||'')}</td><td>${fmt(current.etfbuyamount)}</td>
+          <td>${fmt(current.etfsellamount)}</td><td>${fmt(current.netamount,true)}</td>
+          <td class="change">${esc(changes)}</td><td>${esc(opportunity.label||'—')}</td></tr>`;
+      }).join('') || '<tr><td colspan="8">当日暂无已记录变化</td></tr>';
+      $('historySummary').textContent=`${payload.date||day} · ${items.length} 条变化`;
+    } catch(e) { $('historySummary').textContent=`查询失败：${e.message}`; }
+  }
+
+  function openHistory() {
+    const now=new Date(), offset=now.getTimezoneOffset()*60000;
+    $('historyDate').value ||= new Date(now-offset).toISOString().slice(0,10);
+    const selected=$('historySymbol').value;
+    $('historySymbol').innerHTML='<option value="">全部标的</option>'+[...state.items.keys()].sort()
+      .map(symbol=>`<option value="${esc(symbol)}">${esc(symbol)}</option>`).join('');
+    if(selected) $('historySymbol').value=selected;
+    $('historyModal').classList.add('open'); refreshHistory();
   }
 
   function toast(message) {
@@ -272,6 +338,10 @@
   $('pull').onclick=()=>state.ws?.readyState===1
     ?state.ws.send(JSON.stringify({type:'get_snapshot'}))
     :api('/api/v1/snapshot').then(applySnapshot).catch(e=>toast(e.message));
+  $('history').onclick=openHistory;
+  $('historyRefresh').onclick=refreshHistory;
+  $('historyClose').onclick=()=>$('historyModal').classList.remove('open');
+  $('historyModal').onclick=event=>{ if(event.target===$('historyModal')) $('historyModal').classList.remove('open'); };
   $('sound').onclick=async()=>{
     state.audio ||= new (window.AudioContext||window.webkitAudioContext)();
     await state.audio.resume(); state.sound=true; $('sound').textContent='声音已启用'; beep();

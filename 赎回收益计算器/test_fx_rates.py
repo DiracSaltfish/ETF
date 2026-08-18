@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from datetime import date
+from decimal import Decimal
 
 import fx_rates
 
@@ -73,6 +74,24 @@ class FxRateStoreTest(unittest.TestCase):
         self.assertTrue(all(row["pair"] == "USD/CNY" for row in rows))
         self.assertNotIn("19:00", {row["quote_time"] for row in rows})
 
+    def test_cfets_keeps_hkd_cny_close_for_cross_market_basket(self) -> None:
+        payload = json.loads(json.dumps(SAMPLE_CFETS_JSON, ensure_ascii=False))
+        payload["records"].append(
+            {
+                "ccyPair": "HKD/CNY",
+                "dealDate": "2026-07-03",
+                "rateOf10hour": "0.86510",
+                "rateOf16hour": "0.86470",
+            }
+        )
+        store = fx_rates.FxRateStore(
+            "/tmp/unused.csv",
+            fetch_bytes=lambda url, data=None, headers=None: json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        )
+        rows = store.fetch_cfets_records(SAMPLE_DAY)
+        hkd_close = next(row for row in rows if row["pair"] == "HKD/CNY" and row["quote_time"] == "CLOSE")
+        self.assertEqual(hkd_close["rate"], "0.8647")
+
     def test_ensure_trade_date_writes_csv_and_builds_matrix(self) -> None:
         def fetcher(url, data=None, headers=None):
             if "safe.gov.cn" in url:
@@ -96,6 +115,10 @@ class FxRateStoreTest(unittest.TestCase):
             self.assertEqual(usd["18:00"], "6.7831")
             self.assertEqual(usd["close_rate"], "6.7831")
             self.assertEqual(usd["close_time"], "18:00")
+            self.assertEqual(store.get_usd_cny_safe_mid(SAMPLE_DAY), Decimal("6.8047"))
+            self.assertEqual(store.get_usd_cny_cfets_close(SAMPLE_DAY), Decimal("6.7831"))
+            self.assertEqual(store.get_usd_cny_cfets_hour(SAMPLE_DAY, "16:00"), Decimal("6.781"))
+            self.assertIsNone(store.get_usd_cny_cfets_close(date(2026, 7, 4)))
 
 
 if __name__ == "__main__":

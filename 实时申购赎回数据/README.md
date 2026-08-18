@@ -10,7 +10,9 @@ Mac arm64 交付包：
 dist/ETF监控主机-macOS-arm64.zip
 ```
 
-解压后可直接双击 `ETF监控主机.app`。若需要登录后自动运行并在交易日 `09:15` 自动开始订阅、`15:00` 自动停止，双击 `安装MacHome图形版.command`。安装脚本会把程序放到 `~/Applications`，登录后自动显示主界面，同时启动内网服务。关闭主窗口只会收起到菜单栏，菜单栏图标中可重新显示或彻底退出。
+解压后可直接双击 `ETF监控主机.app`。若需要登录后自动运行，双击 `安装MacHome图形版.command`。安装脚本会把程序放到 `~/Applications`，登录后自动显示主界面，同时启动内网服务。每个工作日 `09:00` 清空上一日实时值和变化基准（不清理当日 PCF 和变化历史），`09:10` 自动启动 Wind；`09:15:05` 用第一只观察标的建立并立即停止临时订阅，以预热 Wind 延迟初始化的 TBAPI2 模块，`09:15:30` 再建立全部正式订阅。首次预热中可识别的 TBAPI 初始化空指针会被安全吸收，不再作为正式订阅失败弹出；`15:00` 先停止订阅，再温和关闭 Wind，并在确认进程完全退出后清理临时 dylib。关闭主窗口只会收起到菜单栏，菜单栏图标中可重新显示或彻底退出。
+
+当前本地交付包使用临时签名，ZIP 内应用已通过 `codesign --verify --deep --strict`，但每次重新打包都会改变 macOS TCC 识别的代码要求。升级后若系统再次询问“其他 App 的数据/完全磁盘访问”，需要为 `~/Applications/ETF监控主机.app` 重新确认一次。要让授权在长期升级中稳定复用，正式做法是使用 `Developer ID Application` 证书签名并提交 Apple 公证；不要使用仅供开发调试的 `Apple Development` 证书替代，否则 Gatekeeper 可能阻止启动。
 
 图形版功能：
 
@@ -22,16 +24,18 @@ dist/ETF监控主机-macOS-arm64.zip
 - 远程桌面客户端主页另有两条独立的交易后端连接：`QMT1` 默认直连 `192.168.1.112:9527`，`QMT2` 默认直连 `192.168.1.111:9527`。它们与 Mac-home 的 `6787` 监控连接相互独立，断线后只重连各自的 QMT 后端。
 - 双击标的进入 PCF 详情后，可在“清单摘要”“成分证券”旁切换 `QMT1` / `QMT2`。每个页签显示该账户的可用资金、当前标的当日委托和最近一次指令状态；单击交易按钮不下单，只有双击“申购/赎回 1 篮子”才会发送后端 `etf_order` 协议。提交成功只代表 QMT 已接受 `passorder` 调用，最终状态以随后同步的委托表为准。
 - 初始全量数据会自动作为变化基准。后续任一标的收到申赎变化后整行会持续高亮，直至点击“重置变化基准”；同时右下角显示可手动关闭、默认持续 60 秒的全局变化横幅。
-- Wind 重启后，交易时段内自动检测并重建订阅。
+- Wind 重启后，交易时段内自动检测、按冷却时间重新启动并重建订阅。主机首页显示 Wind 的未运行、启动中、等待 TBAPI、已就绪、监控中、关闭中、清理中和错误状态；“启动 Wind”“关闭 Wind 并清理”只存在于 Mac-home 本机界面。
+- 收盘清理只匹配 Wind 沙箱临时目录中的 `libwind_tbapi_runtime_<代码>_SZ_<PID>_<时间>_<随机值>.dylib`。程序不会在 Wind 仍运行时清理，不自动使用 `SIGKILL`，也不会删除程序包内的基础探针、PCF 缓存或其他文件。目录操作运行在最长 15 秒的隔离进程中；若 macOS 正等待权限确认，主机只报告可诊断错误，不会永久卡住退出流程。
 - 每个工作日 `08:30` 后为观察列表逐个拉取深圳 PCF；程序对旧配置也强制最早 `08:30`，避免在交易所发布当日 PCF 前请求。成功后按日期落盘，当天再次启动或查看详情不会重复请求。失败标的每 15 分钟重试、单标的每天最多 8 轮自动尝试；只抓结构化 XML，不额外抓 TXT。底层请求最少间隔 8 秒，并继承 V3 拉取器的 403/429/503 冷却保护。
 - 开盘/首次读取只建立累计份额基准，不直接标记机会。盘中赎回份额相对申购份额多增一个完整篮子时，提示“盘中申购机会”；盘中申购份额反向多增时，提示“盘中赎回机会”。PCF 只用于核验最小单位、当日有效性和方向是否开放。
 - 首页不展示 PCF 日期和最小单位，更新时间统一为本地 `HH:MM:SS`；双击标的仍可查看完整 PCF。
-- Mac/Windows 客户端和内网页面在本地同时检查 PCF 的 `CreationLimit` 与 `NetCreationLimit`：累计申购份额达到前者，或轧差份额达到后者，任一成立即显示红色“已满”；仅净申购限额会因后续赎回而释放。PCF 未就绪时不猜测，显示“待确认”。
+- Mac/Windows 客户端和内网页面在本地同时检查 PCF 的 `CreationLimit` 与 `NetCreationLimit`，并显示可申购的完整篮子数：限额为 `0` 代表该项限制未设置，不能单独视为关闭；累计申购达到正数 `CreationLimit`、轧差达到正数 `NetCreationLimit`、或剩余额度不足一篮子时，显示柔和浅豆沙底色与深红字 `0`；其余显示绿底白字的篮子数。仅正数净申购限额会因后续赎回而释放；两个限额均未设置时显示“不限”。PCF 未就绪时不猜测，显示“待确认”。
 - 双击桌面客户端或网页中的标的，可查看主机已缓存的 PCF 摘要和成分证券明细；手动刷新 PCF 只保留在 Mac-home 主机 UI。
 - 标的名称不依赖外部行情接口：在 Mac-home 主机双击标的打开 PCF 详情后可维护自定义名称，名称持久化在主机配置中，并随快照/变化推送同步到 Mac、Windows 和网页只读客户端。远程客户端不能修改名称。
 - 主机观察列表和服务配置持久化到 `~/Library/Application Support/ETFDelivery/config/etf_monitor_server.json`。
 - PCF 日期缓存位于 `~/Library/Application Support/ETFDelivery/pcf_cache/YYYY-MM-DD/xml/`。当前程序只会请求深圳 PCF，不建立上海标的队列。
 - 技术日志不出现在主页，可从“服务日志”打开，文件位于 `~/Library/Application Support/ETFDelivery/logs/server.log`，自动轮换。
+- 每次实时份额变化都按探针回调的毫秒时间写入 `~/Library/Application Support/ETFDelivery/history/changes_YYYY-MM-DD.jsonl`，默认保留 120 天。Mac/Windows 客户端与内网网页均可按日期、标的查询；同时在轮换技术日志中留下简明变化记录。
 
 ## 内网访问
 
@@ -52,6 +56,9 @@ GET  /api/v1/watchlist
 PUT  /api/v1/watchlist
 POST /api/v1/monitor/start
 POST /api/v1/monitor/stop
+GET  /api/v1/wind/status
+POST /api/v1/wind/start
+POST /api/v1/wind/shutdown-cleanup
 GET  /api/v1/pcf
 GET  /api/v1/pcf/<6位深圳代码>
 POST /api/v1/pcf/refresh

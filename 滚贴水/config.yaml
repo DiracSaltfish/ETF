@@ -1,0 +1,49 @@
+data_root: /Volumes/Stocksdata
+output_dir: outputs
+benchmark_data_dir: data/total_return_indices
+
+# 回测只使用现有指数库与主连期货库同时覆盖的日期。
+end_date: "2025-12-31"
+annual_trading_days: 252
+notional_exposure: 1.0
+
+# 基准情景：不把尚未核实的保证金利息计入收益。
+cash_yield_annual: 0.0
+margin_rate: 0.12
+
+# 中金所股指期货非平今交易手续费：成交金额的万分之零点二三。
+exchange_fee_rate: 0.000023
+broker_fee_multiplier: 1.0
+
+# 每边 0.2 指数点（1 个最小变动价位）的执行滑点假设。
+slippage_points_per_side: 0.2
+
+products:
+  IF:
+    name: 沪深300股指期货
+    index_name: 沪深300指数
+    index_symbol: "000300"
+    total_return_symbol: "H00300"
+    multiplier: 300
+    futures_zip_glob: "*主连一分钟*_IF.zip"
+  IH:
+    name: 上证50股指期货
+    index_name: 上证50指数
+    index_symbol: "000016"
+    total_return_symbol: "H00016"
+    multiplier: 300
+    futures_zip_glob: "*主连一分钟*_IH.zip"
+  IC:
+    name: 中证500股指期货
+    index_name: 中证500指数
+    index_symbol: "000905"
+    total_return_symbol: "H00905"
+    multiplier: 200
+    futures_zip_glob: "*主连一分钟*_IC.zip"
+  IM:
+    name: 中证1000股指期货
+    index_name: 中证1000指数
+    index_symbol: "000852"
+    total_return_symbol: "H00852"
+    multiplier: 200
+    futures_zip_glob: "*主连一分钟*_IM.zip"

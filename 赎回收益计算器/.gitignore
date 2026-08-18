@@ -5,3 +5,5 @@ __pycache__/
 config.json
 fx_data/
 szse_pcf_cache/
+临时研究数据/*
+!临时研究数据/用途说明.md
